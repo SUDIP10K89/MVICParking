@@ -1,4 +1,4 @@
-import { Link } from 'expo-router';
+import { Link, router } from 'expo-router';
 import { useState } from 'react';
 import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 
@@ -29,7 +29,10 @@ export default function LoginScreen() {
           onChangeText={setPassword}
         />
 
-        <Pressable style={styles.primaryButton}>
+        <Pressable
+          style={styles.primaryButton}
+          onPress={() => router.replace('/home')}
+        >
           <Text style={styles.primaryButtonText}>Login</Text>
         </Pressable>
 

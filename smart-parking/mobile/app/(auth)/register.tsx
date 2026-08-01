@@ -1,4 +1,4 @@
-import { Link } from 'expo-router';
+import { Link, router } from 'expo-router';
 import { useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 
@@ -27,7 +27,10 @@ export default function RegisterScreen() {
         <TextInput style={styles.input} placeholder="Vehicle Type" value={vehicleType} onChangeText={setVehicleType} />
         <TextInput style={styles.input} placeholder="Vehicle Number" value={vehicleNumber} onChangeText={setVehicleNumber} />
 
-        <Pressable style={styles.primaryButton}>
+        <Pressable
+          style={styles.primaryButton}
+          onPress={() => router.replace('/home')}
+        >
           <Text style={styles.primaryButtonText}>Register</Text>
         </Pressable>
 

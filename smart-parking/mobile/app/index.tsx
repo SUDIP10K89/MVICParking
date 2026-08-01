@@ -1,6 +1,10 @@
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, useState } from 'react';
-import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
+import { ScrollView, StyleSheet, View } from 'react-native';
+import ConnectionStatusCard from '../components/ConnectionStatusCard';
+import ParkingOverview from '../components/ParkingOverview';
+import ParkingSpotList from '../components/ParkingSpotList';
+import { mockParkingData, mockSummary } from '../data/mockParkingData';
 import { getHealthStatus } from '../services/api';
 
 export default function App() {
@@ -24,31 +28,22 @@ export default function App() {
   }, []);
 
   return (
-    <View style={styles.container}>
-      {isLoading ? (
-        <ActivityIndicator size="large" color="#2563eb" />
-      ) : (
-        <Text style={styles.statusText}>
-          {isConnected ? 'Backend Connected ✅' : 'Backend Connection Failed ❌'}
-        </Text>
-      )}
+    <ScrollView contentContainerStyle={styles.container}>
+      <ConnectionStatusCard isConnected={isConnected} isLoading={isLoading} />
+      <ParkingOverview summary={mockSummary} />
+      <ParkingSpotList spots={mockParkingData} />
       <StatusBar style="auto" />
-    </View>
+    </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
-    flex: 1,
+    flexGrow: 1,
     backgroundColor: '#f8fafc',
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: 24,
-  },
-  statusText: {
-    fontSize: 20,
-    fontWeight: '600',
-    color: '#0f172a',
-    textAlign: 'center',
+    paddingVertical: 32,
   },
 });

@@ -26,6 +26,7 @@ def parse_source(source: str) -> int | str:
 
 DATA_FILE = Path(__file__).with_name("parking_areas.json")
 ENV_FILE = Path(__file__).with_name(".env")
+DEFAULT_VIDEO_FILE = Path(__file__).with_name("sample.mp4")
 parking_area_lock = threading.Lock()
 status_lock = threading.Lock()
 URL_PATTERN = re.compile(r"^(https?://|rtsp://)", re.IGNORECASE)
@@ -216,8 +217,8 @@ class ParkingStatus:
             }
 
 
-def detector_config_from_area(area: dict[str, Any]) -> dict[str, Any] | None:
-    source = str(area.get("cameraUrl") or area.get("source") or "").strip()
+def detector_config_from_area(area: dict[str, Any], video_source: str) -> dict[str, Any] | None:
+    source = str(video_source).strip()
     if not source:
         return None
 
@@ -267,10 +268,10 @@ def status_from_config(config: dict[str, Any]) -> ParkingStatus:
     )
 
 
-def saved_detector_configs() -> dict[str, dict[str, Any]]:
+def saved_detector_configs(video_source: str) -> dict[str, dict[str, Any]]:
     configs = {}
     for area in load_saved_parking_areas():
-        config = detector_config_from_area(area)
+        config = detector_config_from_area(area, video_source)
         if config is not None:
             configs[str(config["id"])] = config
     return configs
@@ -282,8 +283,9 @@ def sync_statuses(
     detector_keys: dict[str, str],
     display: bool,
     start_detectors: bool,
+    video_source: str,
 ) -> None:
-    configs = saved_detector_configs()
+    configs = saved_detector_configs(video_source)
 
     with status_lock:
         for area_id in list(statuses):
@@ -593,6 +595,7 @@ def create_handler(
     detector_keys: dict[str, str],
     display: bool,
     start_detectors: bool,
+    video_source: str,
 ):
     class ParkingApiHandler(BaseHTTPRequestHandler):
         def do_OPTIONS(self) -> None:
@@ -606,7 +609,7 @@ def create_handler(
                 return
 
             if path == "/api/parking-status":
-                sync_statuses(statuses, detector_threads, detector_keys, display, start_detectors)
+                sync_statuses(statuses, detector_threads, detector_keys, display, start_detectors, video_source)
                 with status_lock:
                     areas = [status.snapshot() for status in statuses.values()]
                 write_json(self, {"areas": areas})
@@ -629,7 +632,7 @@ def create_handler(
             prefix = "/api/parking-status/"
             if path.startswith(prefix):
                 area_id = path[len(prefix):]
-                sync_statuses(statuses, detector_threads, detector_keys, display, start_detectors)
+                sync_statuses(statuses, detector_threads, detector_keys, display, start_detectors, video_source)
                 with status_lock:
                     status = statuses.get(area_id)
 
@@ -663,7 +666,7 @@ def create_handler(
             areas = load_saved_parking_areas()
             areas.insert(0, area)
             save_parking_areas(areas)
-            sync_statuses(statuses, detector_threads, detector_keys, display, start_detectors)
+            sync_statuses(statuses, detector_threads, detector_keys, display, start_detectors, video_source)
             write_json(self, public_area(area), 201)
 
         def log_message(self, format: str, *args: Any) -> None:
@@ -678,6 +681,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--port", type=int, default=5000, help="API port.")
     parser.add_argument("--display", action="store_true", help="Show OpenCV detection windows.")
     parser.add_argument(
+        "--video",
+        default=str(DEFAULT_VIDEO_FILE),
+        help="Prerecorded video file to use as detector input.",
+    )
+    parser.add_argument(
         "--no-detector",
         action="store_true",
         help="Run only the API with configured areas, useful for frontend wiring tests.",
@@ -691,12 +699,14 @@ def main() -> None:
     detector_threads: dict[str, threading.Thread] = {}
     detector_keys: dict[str, str] = {}
     start_detectors = not args.no_detector
-    sync_statuses(statuses, detector_threads, detector_keys, args.display, start_detectors)
+    video_source = str(Path(args.video).expanduser())
+    sync_statuses(statuses, detector_threads, detector_keys, args.display, start_detectors, video_source)
 
     server = ThreadingHTTPServer(
         (args.host, args.port),
-        create_handler(statuses, detector_threads, detector_keys, args.display, start_detectors),
+        create_handler(statuses, detector_threads, detector_keys, args.display, start_detectors, video_source),
     )
+    print(f"Prerecorded detector source: {video_source}")
     print(f"Parking status API running at http://{args.host}:{args.port}/api/parking-status")
     server.serve_forever()
 

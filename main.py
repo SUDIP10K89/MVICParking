@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import hashlib
 import json
 import os
 import re
@@ -23,24 +24,10 @@ def parse_source(source: str) -> int | str:
         return source
 
 
-# Configure only CCTV-backed parking areas here. The frontend will show live
-# availability only when an OpenStreetMap place matches one of these entries.
-PARKING_AREAS: dict[str, dict[str, Any]] = {
-    "demo-parking": {
-        "name": "Bajeko Bhojanalaya",
-        "source": "http://192.168.242.84:8080/video",
-        "capacity": 60,
-        "lat": 27.705168,
-        "lng": 85.328717,
-        "match_radius_meters": 200,
-        "process_every_n_frames": 1,
-        "resize_width": 640,
-    }
-}
-
 DATA_FILE = Path(__file__).with_name("parking_areas.json")
 ENV_FILE = Path(__file__).with_name(".env")
 parking_area_lock = threading.Lock()
+status_lock = threading.Lock()
 URL_PATTERN = re.compile(r"^(https?://|rtsp://)", re.IGNORECASE)
 mongo_collection = None
 mongo_checked = False
@@ -120,7 +107,35 @@ def app_area(area: dict[str, Any]) -> dict[str, Any]:
 
 
 def load_json_parking_areas() -> list[dict[str, Any]]:
-    return load_json_parking_areas()
+    if not DATA_FILE.exists():
+        return []
+
+    try:
+        data = json.loads(DATA_FILE.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return []
+
+    return data if isinstance(data, list) else []
+
+
+def parking_area_version(areas: list[dict[str, Any]]) -> str:
+    canonical = json.dumps(areas, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def parking_area_last_modified(areas: list[dict[str, Any]]) -> str | None:
+    values = [
+        str(area.get("updatedAt") or area.get("createdAt") or "")
+        for area in areas
+        if area.get("updatedAt") or area.get("createdAt")
+    ]
+    if values:
+        return max(values)
+
+    if DATA_FILE.exists():
+        return dt.datetime.fromtimestamp(DATA_FILE.stat().st_mtime, dt.UTC).isoformat()
+
+    return None
 
 
 def seed_mongo_from_json(collection) -> None:
@@ -158,13 +173,15 @@ class ParkingStatus:
     error: str | None = None
     last_updated: str | None = None
     lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    stop_event: threading.Event = field(default_factory=threading.Event, repr=False)
 
-    def update(self, occupied: int, error: str | None = None) -> None:
+    def update(self, occupied: int, error: str | None = None) -> str:
         with self.lock:
             self.occupied = max(0, min(self.capacity, occupied))
             self.available = self.capacity - self.occupied
             self.error = error
             self.last_updated = dt.datetime.now(dt.UTC).isoformat()
+            return self.last_updated
 
     def set_running(self, running: bool) -> None:
         with self.lock:
@@ -176,6 +193,12 @@ class ParkingStatus:
             self.error = error
             self.running = False
             self.last_updated = dt.datetime.now(dt.UTC).isoformat()
+
+    def stop(self) -> None:
+        self.stop_event.set()
+
+    def should_stop(self) -> bool:
+        return self.stop_event.is_set()
 
     def snapshot(self) -> dict[str, Any]:
         with self.lock:
@@ -194,22 +217,104 @@ class ParkingStatus:
             }
 
 
-def build_statuses() -> dict[str, ParkingStatus]:
-    statuses = {}
+def detector_config_from_area(area: dict[str, Any]) -> dict[str, Any] | None:
+    source = str(area.get("cameraUrl") or area.get("source") or "").strip()
+    if not source:
+        return None
 
-    for area_id, config in PARKING_AREAS.items():
-        capacity = int(config["capacity"])
-        statuses[area_id] = ParkingStatus(
-            area_id=area_id,
-            name=str(config["name"]),
-            capacity=capacity,
-            available=capacity,
-            lat=float(config["lat"]),
-            lng=float(config["lng"]),
-            match_radius_meters=int(config.get("match_radius_meters", 200)),
-        )
+    try:
+        return {
+            "id": str(area["id"]),
+            "name": str(area["name"]),
+            "source": source,
+            "capacity": int(area.get("totalSlots", area.get("capacity", 0))),
+            "occupied": int(area.get("occupiedSlots", area.get("occupied", 0))),
+            "lat": float(area["lat"]),
+            "lng": float(area.get("lng", area.get("lon"))),
+            "match_radius_meters": int(area.get("matchRadiusMeters", area.get("match_radius_meters", 200))),
+            "process_every_n_frames": int(area.get("processEveryNFrames", area.get("process_every_n_frames", 1))),
+            "resize_width": int(area.get("resizeWidth", area.get("resize_width", 640))),
+        }
+    except (KeyError, TypeError, ValueError):
+        return None
 
-    return statuses
+
+def detector_config_key(config: dict[str, Any]) -> str:
+    values = {
+        "name": config["name"],
+        "source": config["source"],
+        "capacity": config["capacity"],
+        "lat": config["lat"],
+        "lng": config["lng"],
+        "match_radius_meters": config["match_radius_meters"],
+        "process_every_n_frames": config["process_every_n_frames"],
+        "resize_width": config["resize_width"],
+    }
+    return json.dumps(values, sort_keys=True, separators=(",", ":"))
+
+
+def status_from_config(config: dict[str, Any]) -> ParkingStatus:
+    capacity = int(config["capacity"])
+    occupied = max(0, min(capacity, int(config.get("occupied", 0))))
+    return ParkingStatus(
+        area_id=str(config["id"]),
+        name=str(config["name"]),
+        capacity=capacity,
+        occupied=occupied,
+        available=capacity - occupied,
+        lat=float(config["lat"]),
+        lng=float(config["lng"]),
+        match_radius_meters=int(config.get("match_radius_meters", 200)),
+    )
+
+
+def saved_detector_configs() -> dict[str, dict[str, Any]]:
+    configs = {}
+    for area in load_saved_parking_areas():
+        config = detector_config_from_area(area)
+        if config is not None:
+            configs[str(config["id"])] = config
+    return configs
+
+
+def sync_statuses(
+    statuses: dict[str, ParkingStatus],
+    detector_threads: dict[str, threading.Thread],
+    detector_keys: dict[str, str],
+    display: bool,
+    start_detectors: bool,
+) -> None:
+    configs = saved_detector_configs()
+
+    with status_lock:
+        for area_id in list(statuses):
+            if area_id not in configs:
+                statuses[area_id].stop()
+                statuses.pop(area_id, None)
+                detector_keys.pop(area_id, None)
+
+        for area_id, config in configs.items():
+            config_key = detector_config_key(config)
+            if area_id in statuses and detector_keys.get(area_id) == config_key:
+                continue
+
+            if area_id in statuses:
+                statuses[area_id].stop()
+
+            status = status_from_config(config)
+            statuses[area_id] = status
+            detector_keys[area_id] = config_key
+
+            if not start_detectors:
+                continue
+
+            detector_thread = threading.Thread(
+                target=run_detector,
+                args=(area_id, config, status, display),
+                daemon=True,
+            )
+            detector_threads[area_id] = detector_thread
+            detector_thread.start()
 
 
 def load_saved_parking_areas() -> list[dict[str, Any]]:
@@ -218,15 +323,7 @@ def load_saved_parking_areas() -> list[dict[str, Any]]:
         return [app_area(area) for area in collection.find({}).sort("createdAt", -1)]
 
     with parking_area_lock:
-        if not DATA_FILE.exists():
-            return []
-
-        try:
-            data = json.loads(DATA_FILE.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            return []
-
-        return data if isinstance(data, list) else []
+        return load_json_parking_areas()
 
 
 def save_parking_areas(areas: list[dict[str, Any]]) -> None:
@@ -239,6 +336,40 @@ def save_parking_areas(areas: list[dict[str, Any]]) -> None:
 
     with parking_area_lock:
         DATA_FILE.write_text(json.dumps(areas, indent=2), encoding="utf-8")
+
+
+def save_detected_occupancy(area_id: str, occupied_slots: int, detected_at: str) -> None:
+    collection = get_parking_area_collection()
+    if collection is not None:
+        collection.update_one(
+            {"id": area_id},
+            {
+                "$set": {
+                    "occupiedSlots": occupied_slots,
+                    "occupied": occupied_slots,
+                    "lastDetectedAt": detected_at,
+                    "updatedAt": detected_at,
+                }
+            },
+        )
+        return
+
+    with parking_area_lock:
+        areas = load_json_parking_areas()
+        changed = False
+        for area in areas:
+            if str(area.get("id")) != area_id:
+                continue
+
+            area["occupiedSlots"] = occupied_slots
+            area["occupied"] = occupied_slots
+            area["lastDetectedAt"] = detected_at
+            area["updatedAt"] = detected_at
+            changed = True
+            break
+
+        if changed:
+            DATA_FILE.write_text(json.dumps(areas, indent=2), encoding="utf-8")
 
 
 def public_area(area: dict[str, Any]) -> dict[str, Any]:
@@ -257,6 +388,8 @@ def public_area(area: dict[str, Any]) -> dict[str, Any]:
         "occupiedSlots": occupied_slots,
         "availableSlots": available_slots,
         "createdAt": area.get("createdAt"),
+        "updatedAt": area.get("updatedAt"),
+        "lastDetectedAt": area.get("lastDetectedAt"),
     }
 
 
@@ -299,9 +432,10 @@ def run_detector(area_id: str, config: dict[str, Any], status: ParkingStatus, di
 
     capacity = int(config["capacity"])
     source = str(config["source"])
+    window_title = f"Parking Detection - {status.name}"
     process_every_n_frames = max(1, int(config.get("process_every_n_frames", 1)))
     resize_width = int(config.get("resize_width", 0))
-    occupied_units = 0
+    occupied_units = max(0, min(capacity, int(config.get("occupied", 0))))
     frame_count = 0
     track_sides: dict[int, str] = {}
     counted_crossings: set[tuple[int, str, str]] = set()
@@ -316,9 +450,10 @@ def run_detector(area_id: str, config: dict[str, Any], status: ParkingStatus, di
             return
 
         status.set_running(True)
-        status.update(occupied_units)
+        detected_at = status.update(occupied_units)
+        save_detected_occupancy(area_id, occupied_units, detected_at)
 
-        while True:
+        while not status.should_stop():
             ret, frame = cap.read()
 
             if not ret:
@@ -374,7 +509,8 @@ def run_detector(area_id: str, config: dict[str, Any], status: ParkingStatus, di
                                 occupied_units = max(0, occupied_units - space_units)
 
                             counted_crossings.add(crossing_key)
-                            status.update(occupied_units)
+                            detected_at = status.update(occupied_units)
+                            save_detected_occupancy(area_id, occupied_units, detected_at)
 
                     track_sides[track_id] = current_side
 
@@ -399,7 +535,7 @@ def run_detector(area_id: str, config: dict[str, Any], status: ParkingStatus, di
                     (0, 255, 0),
                     2,
                 )
-                cv2.imshow(f"Parking Detection - {area_id}", annotated_frame)
+                cv2.imshow(window_title, annotated_frame)
 
                 if cv2.waitKey(1) & 0xFF == ord("q"):
                     break
@@ -414,16 +550,23 @@ def run_detector(area_id: str, config: dict[str, Any], status: ParkingStatus, di
     finally:
         if display:
             try:
-                cv2.destroyWindow(f"Parking Detection - {area_id}")
+                cv2.destroyWindow(window_title)
             except cv2.error:
                 pass
 
 
-def write_json(handler: BaseHTTPRequestHandler, payload: dict[str, Any], status_code: int = 200) -> None:
+def write_json(
+    handler: BaseHTTPRequestHandler,
+    payload: dict[str, Any],
+    status_code: int = 200,
+) -> None:
     body = json.dumps(payload).encode("utf-8")
     handler.send_response(status_code)
     handler.send_header("Content-Type", "application/json")
     handler.send_header("Content-Length", str(len(body)))
+    handler.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+    handler.send_header("Pragma", "no-cache")
+    handler.send_header("Expires", "0")
     handler.send_header("Access-Control-Allow-Origin", "*")
     handler.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
     handler.send_header("Access-Control-Allow-Headers", "Content-Type")
@@ -445,7 +588,13 @@ def read_json_body(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     return payload
 
 
-def create_handler(statuses: dict[str, ParkingStatus]):
+def create_handler(
+    statuses: dict[str, ParkingStatus],
+    detector_threads: dict[str, threading.Thread],
+    detector_keys: dict[str, str],
+    display: bool,
+    start_detectors: bool,
+):
     class ParkingApiHandler(BaseHTTPRequestHandler):
         def do_OPTIONS(self) -> None:
             write_json(self, {"ok": True})
@@ -458,19 +607,32 @@ def create_handler(statuses: dict[str, ParkingStatus]):
                 return
 
             if path == "/api/parking-status":
-                write_json(self, {"areas": [status.snapshot() for status in statuses.values()]})
+                sync_statuses(statuses, detector_threads, detector_keys, display, start_detectors)
+                with status_lock:
+                    areas = [status.snapshot() for status in statuses.values()]
+                write_json(self, {"areas": areas})
                 return
 
             if path == "/api/parking-areas":
                 areas = [public_area(area) for area in load_saved_parking_areas()]
                 areas.sort(key=lambda area: str(area.get("createdAt") or ""), reverse=True)
-                write_json(self, {"areas": areas})
+                last_modified = parking_area_last_modified(areas)
+                write_json(
+                    self,
+                    {
+                        "areas": areas,
+                        "dataVersion": parking_area_version(areas),
+                        "lastModified": last_modified,
+                    },
+                )
                 return
 
             prefix = "/api/parking-status/"
             if path.startswith(prefix):
                 area_id = path[len(prefix):]
-                status = statuses.get(area_id)
+                sync_statuses(statuses, detector_threads, detector_keys, display, start_detectors)
+                with status_lock:
+                    status = statuses.get(area_id)
 
                 if not status:
                     write_json(self, {"error": "Unknown parking area"}, 404)
@@ -502,6 +664,7 @@ def create_handler(statuses: dict[str, ParkingStatus]):
             areas = load_saved_parking_areas()
             areas.insert(0, area)
             save_parking_areas(areas)
+            sync_statuses(statuses, detector_threads, detector_keys, display, start_detectors)
             write_json(self, public_area(area), 201)
 
         def log_message(self, format: str, *args: Any) -> None:
@@ -525,18 +688,16 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    statuses = build_statuses()
+    statuses: dict[str, ParkingStatus] = {}
+    detector_threads: dict[str, threading.Thread] = {}
+    detector_keys: dict[str, str] = {}
+    start_detectors = not args.no_detector
+    sync_statuses(statuses, detector_threads, detector_keys, args.display, start_detectors)
 
-    if not args.no_detector:
-        for area_id, config in PARKING_AREAS.items():
-            detector_thread = threading.Thread(
-                target=run_detector,
-                args=(area_id, config, statuses[area_id], args.display),
-                daemon=True,
-            )
-            detector_thread.start()
-
-    server = ThreadingHTTPServer((args.host, args.port), create_handler(statuses))
+    server = ThreadingHTTPServer(
+        (args.host, args.port),
+        create_handler(statuses, detector_threads, detector_keys, args.display, start_detectors),
+    )
     print(f"Parking status API running at http://{args.host}:{args.port}/api/parking-status")
     server.serve_forever()
 

@@ -25,6 +25,8 @@ let userMarkers;
 let adminMarkers;
 let userMarkerByAreaId = new Map();
 let adminMarkerByAreaId = new Map();
+let userParkingDataVersion = null;
+let adminParkingDataVersion = null;
 
 const pinIcon = L.divIcon({
     className: '',
@@ -136,6 +138,40 @@ function getAreaKey(area) {
     return String(area.id || `${normalizeName(getName(area))}-${coordinateKey(area.lat)}-${coordinateKey(area.lng ?? area.lon)}`);
 }
 
+function getPayloadAreas(payload) {
+    return Array.isArray(payload.areas) ? payload.areas : [];
+}
+
+function areaDatasetSignature(areas) {
+    return JSON.stringify(areas.map(area => ({
+        id: getAreaKey(area),
+        name: area.name || '',
+        lat: Number(area.lat),
+        lng: Number(area.lng ?? area.lon),
+        cameraUrl: area.cameraUrl || '',
+        totalSlots: Number(area.totalSlots ?? area.capacity ?? 0),
+        occupiedSlots: Number(area.occupiedSlots ?? area.occupied ?? 0),
+        createdAt: area.createdAt || '',
+        updatedAt: area.updatedAt || ''
+    })));
+}
+
+function getParkingDataVersion(payload) {
+    const areas = getPayloadAreas(payload);
+    return payload.dataVersion || payload.lastModified || areaDatasetSignature(areas);
+}
+
+function prepareSavedAreas(areas) {
+    return areas.map(area => ({ ...area, lng: area.lng ?? area.lon, adminAdded: true, source: 'admin' }));
+}
+
+function buildUserLocations(areas) {
+    return attachCctvAvailability(areas)
+        .map(area => ({ ...area, meters: distanceMeters(currentOrigin, area.lat, area.lng ?? area.lon) }))
+        .filter(area => area.meters <= 10000)
+        .sort((a, b) => a.meters - b.meters);
+}
+
 function getAvailabilityText(area) {
     const liveStatus = area.cctvStatus;
     if (liveStatus && !liveStatus.error) {
@@ -191,10 +227,11 @@ function initAdminMap() {
 }
 
 async function fetchSavedAreas() {
-    const response = await fetch(API_CONFIG.PARKING_AREAS_API);
+    const url = `${API_CONFIG.PARKING_AREAS_API}?_=${Date.now()}`;
+    const response = await fetch(url, { cache: 'no-store' });
     if (!response.ok) throw new Error('Parking-area database is unavailable.');
     const payload = await response.json();
-    return Array.isArray(payload.areas) ? payload.areas : [];
+    return payload && typeof payload === 'object' ? payload : { areas: [] };
 }
 
 async function fetchCctvParkingAreas() {
@@ -238,15 +275,14 @@ async function findParking(lat, lng) {
         fetchCctvParkingAreas()
     ]);
 
+    const savedPayload = savedResult.status === 'fulfilled' ? savedResult.value : { areas: [] };
     const adminAreas = savedResult.status === 'fulfilled'
-        ? savedResult.value.map(area => ({ ...area, lng: area.lng ?? area.lon, adminAdded: true, source: 'admin' }))
+        ? prepareSavedAreas(getPayloadAreas(savedPayload))
         : [];
 
+    userParkingDataVersion = getParkingDataVersion(savedPayload);
     savedAreas = adminAreas;
-    currentLocations = attachCctvAvailability(adminAreas)
-        .map(area => ({ ...area, meters: distanceMeters(currentOrigin, area.lat, area.lng) }))
-        .filter(area => area.meters <= 10000)
-        .sort((a, b) => a.meters - b.meters);
+    currentLocations = buildUserLocations(adminAreas);
 
     renderParking(currentLocations);
 
@@ -323,11 +359,26 @@ async function refreshUserAvailability() {
 
     try {
         await fetchCctvParkingAreas();
-        const freshAreas = await fetchSavedAreas();
-        const byId = new Map(freshAreas.map(area => [area.id, area]));
+        const freshPayload = await fetchSavedAreas();
+        const freshVersion = getParkingDataVersion(freshPayload);
+        const freshAreas = prepareSavedAreas(getPayloadAreas(freshPayload));
+
+        if (freshVersion !== userParkingDataVersion) {
+            userParkingDataVersion = freshVersion;
+            savedAreas = freshAreas;
+            currentLocations = buildUserLocations(freshAreas);
+            renderParking(currentLocations);
+            setStatus(currentLocations.length
+                ? `${currentLocations.length} admin-added parking area${currentLocations.length === 1 ? '' : 's'} found near this location.`
+                : 'No admin-added parking areas found nearby.');
+            return;
+        }
+
+        const byId = new Map(freshAreas.map(area => [getAreaKey(area), area]));
         currentLocations = attachCctvAvailability(currentLocations.map(spot => {
-            if (!spot.adminAdded || !byId.has(spot.id)) return spot;
-            return { ...byId.get(spot.id), lng: byId.get(spot.id).lng ?? byId.get(spot.id).lon, adminAdded: true, source: 'admin' };
+            const areaKey = getAreaKey(spot);
+            if (!spot.adminAdded || !byId.has(areaKey)) return spot;
+            return byId.get(areaKey);
         })).map(area => ({ ...area, meters: distanceMeters(currentOrigin, area.lat, area.lng ?? area.lon) }));
         currentLocations.forEach(area => {
             updateAreaDom(area, 'user');
@@ -417,7 +468,9 @@ async function loadAdminAreas() {
     initAdminMap();
     try {
         await fetchCctvParkingAreas();
-        savedAreas = attachCctvAvailability(await fetchSavedAreas());
+        const savedPayload = await fetchSavedAreas();
+        adminParkingDataVersion = getParkingDataVersion(savedPayload);
+        savedAreas = attachCctvAvailability(prepareSavedAreas(getPayloadAreas(savedPayload)));
         renderSavedAreas(savedAreas);
     } catch {
         document.querySelector('#saved-areas').innerHTML = '<p class="empty-state">Parking-area API unavailable. Start the Python backend.</p>';
@@ -429,7 +482,16 @@ async function refreshAdminAvailability() {
 
     try {
         await fetchCctvParkingAreas();
-        savedAreas = attachCctvAvailability(await fetchSavedAreas());
+        const savedPayload = await fetchSavedAreas();
+        const freshVersion = getParkingDataVersion(savedPayload);
+        savedAreas = attachCctvAvailability(prepareSavedAreas(getPayloadAreas(savedPayload)));
+
+        if (freshVersion !== adminParkingDataVersion) {
+            adminParkingDataVersion = freshVersion;
+            renderSavedAreas(savedAreas);
+            return;
+        }
+
         savedAreas.forEach(area => {
             updateAreaDom(area, 'admin');
             updateMarkerPopup(adminMarkerByAreaId, area);

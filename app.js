@@ -1,542 +1,537 @@
-// Configuration - Using OpenStreetMap only (NO payment required, NO mock data!)
 const API_CONFIG = {
-    USE_OVERPASS: true,
-    USE_FALLBACK: false,  // Disabled - only real data from OpenStreetMap
+    API_BASE: 'http://127.0.0.1:5000',
+    PARKING_AREAS_API: 'http://127.0.0.1:5000/api/parking-areas',
     CCTV_STATUS_API: 'http://127.0.0.1:5000/api/parking-status'
 };
 
-// Real parking data will be fetched from OpenStreetMap only
-let parkingData = [];
+const DEFAULT_CENTER = [27.7172, 85.3240];
+const tileOptions = {
+    maxZoom: 19,
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+};
 
-let map;
+let userMap;
+let adminMap;
 let userMarker;
-let parkingMarkers = [];
-let currentParkingData = [];
+let selectedAdminPoint;
+let selectedAdminMarker;
+let userPortalLoaded = false;
+let adminPortalLoaded = false;
+let currentOrigin = null;
+let currentLocations = [];
+let savedAreas = [];
 let cctvParkingAreas = [];
+let userMarkers;
+let adminMarkers;
 
-function normalizeName(name) {
-    return (name || '')
-        .toLowerCase()
-        .replace(/[^a-z0-9]+/g, ' ')
-        .trim();
-}
+const pinIcon = L.divIcon({
+    className: '',
+    iconSize: [31, 31],
+    iconAnchor: [16, 31],
+    html: '<div class="parking-marker"><b>P</b></div>'
+});
+
+const livePinIcon = L.divIcon({
+    className: '',
+    iconSize: [33, 33],
+    iconAnchor: [17, 33],
+    html: '<div class="parking-marker live-marker"><b>P</b></div>'
+});
+
+const userIcon = L.divIcon({
+    className: '',
+    iconSize: [17, 17],
+    iconAnchor: [9, 9],
+    html: '<div class="user-marker"></div>'
+});
 
 function escapeHtml(value) {
-    return String(value ?? '')
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#039;');
+    const div = document.createElement('div');
+    div.textContent = value ?? '';
+    return div.innerHTML;
+}
+
+function normalizeName(name) {
+    return String(name || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 }
 
 function metersToMiles(meters) {
     return meters / 1609.344;
 }
 
+function distanceMeters(origin, lat, lng) {
+    return Math.round(L.latLng(origin).distanceTo([lat, lng]));
+}
+
+function distanceLabel(meters) {
+    return meters > 999 ? `${(meters / 1000).toFixed(1)} km` : `${meters} m`;
+}
+
+function setStatus(message) {
+    document.querySelector('#status').textContent = message;
+}
+
+function getName(item) {
+    return item.name || item.tags?.name || item.tags?.operator || (item.adminAdded ? 'Admin parking area' : 'Parking area');
+}
+
+function getCategory(tags = {}) {
+    if (tags.amenity === 'parking') return 'Mapped parking';
+    if (tags.shop === 'mall') return 'Shopping mall';
+    if (tags.amenity === 'hospital') return 'Hospital';
+    if (tags.amenity === 'restaurant') return 'Restaurant';
+    if (tags.shop === 'supermarket') return 'Supermarket';
+    if (tags.amenity === 'cinema') return 'Cinema hall';
+    return 'Parking area';
+}
+
+function initUserMap() {
+    if (userMap) return;
+    userMap = L.map('user-map', { zoomControl: false }).setView(DEFAULT_CENTER, 14);
+    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', tileOptions).addTo(userMap);
+    userMarkers = L.layerGroup().addTo(userMap);
+}
+
+function initAdminMap() {
+    if (adminMap) return;
+    adminMap = L.map('admin-map', { zoomControl: true }).setView(DEFAULT_CENTER, 14);
+    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', tileOptions).addTo(adminMap);
+    adminMarkers = L.layerGroup().addTo(adminMap);
+    adminMap.on('click', event => selectAdminLocation(event.latlng.lat, event.latlng.lng));
+}
+
+async function fetchSavedAreas() {
+    const response = await fetch(API_CONFIG.PARKING_AREAS_API);
+    if (!response.ok) throw new Error('Parking-area database is unavailable.');
+    const payload = await response.json();
+    return Array.isArray(payload.areas) ? payload.areas : [];
+}
+
 async function fetchCctvParkingAreas() {
     try {
         const response = await fetch(API_CONFIG.CCTV_STATUS_API);
-
-        if (!response.ok) {
-            throw new Error(`CCTV API failed with status ${response.status}`);
-        }
-
+        if (!response.ok) throw new Error(`CCTV API failed with status ${response.status}`);
         const data = await response.json();
         cctvParkingAreas = Array.isArray(data.areas) ? data.areas : [];
     } catch (error) {
-        console.warn('Could not fetch CCTV parking status:', error.message);
         cctvParkingAreas = [];
     }
 }
 
 function findMatchingCctvArea(place) {
-    const placeName = normalizeName(place.name);
+    const placeName = normalizeName(getName(place));
 
     return cctvParkingAreas.find(area => {
-        const areaName = normalizeName(area.name);
         const radiusMiles = metersToMiles(area.matchRadiusMeters || 200);
-        const distanceMiles = calculateDistance(place.lat, place.lng, area.lat, area.lng);
+        const placeLat = Number(place.lat);
+        const placeLng = Number(place.lng ?? place.lon);
+        const distanceMiles = metersToMiles(L.latLng(placeLat, placeLng).distanceTo([area.lat, area.lng]));
+        const areaName = normalizeName(area.name);
         const coordinateMatch = distanceMiles <= radiusMiles;
-        const nameMatch = placeName && areaName && (
-            placeName.includes(areaName) ||
-            areaName.includes(placeName)
-        );
-
+        const nameMatch = placeName && areaName && (placeName.includes(areaName) || areaName.includes(placeName));
         return coordinateMatch || nameMatch;
     });
 }
 
 function attachCctvAvailability(places) {
-    return places.map(place => {
-        const matchingArea = findMatchingCctvArea(place);
-
-        if (!matchingArea) {
-            return {
-                ...place,
-                cctvStatus: null
-            };
-        }
-
-        return {
-            ...place,
-            cctvStatus: matchingArea
-        };
-    });
+    return places.map(place => ({ ...place, cctvStatus: findMatchingCctvArea(place) || null }));
 }
 
-function renderAvailability(status) {
-    if (!status) {
-        return '<p><strong>Live Parking:</strong> No live CCTV data</p>';
-    }
-
-    if (status.error) {
-        return `<p><strong>Live Parking:</strong> Unavailable (${escapeHtml(status.error)})</p>`;
-    }
-
-    return `
-        <p><strong>Live Parking:</strong> ${status.available} / ${status.capacity} units available</p>
-        <p><strong>Occupied:</strong> ${status.occupied} units</p>
-    `;
-}
-
-// Fetch parking data from multiple sources
-async function fetchParkingData(lat, lng, radius = 1.5) {
-    let parkingLocations = [];
-    
-    // Try Overpass API (free, no payment required)
-    if (API_CONFIG.USE_OVERPASS) {
-        const overpassResults = await fetchFromOverpass(lat, lng, radius);
-        if (overpassResults.length >= 3) {
-            return overpassResults;
-        }
-        parkingLocations = overpassResults;
-    }
-    
-    // If we have good results, return them
-    if (parkingLocations.length >= 3) {
-        return parkingLocations.slice(0, 20);
-    }
-    
-    // Fall back to fallback data
-    if (API_CONFIG.USE_FALLBACK) {
-        console.log('Using fallback parking data...');
-        return generateFallbackParking(lat, lng);
-    }
-    
-    return parkingLocations;
-}
-
-// Helper function to get parking type from name/title
-function getParkingTypeFromName(name) {
-    const nameLower = name.toLowerCase();
-    
-    if (nameLower.includes('underground') || nameLower.includes('underground parking')) return 'Underground';
-    if (nameLower.includes('garage') || nameLower.includes('multi')) return 'Multi-level';
-    if (nameLower.includes('surface') || nameLower.includes('open')) return 'Open Air';
-    if (nameLower.includes('street')) return 'Street';
-    if (nameLower.includes('valet')) return 'Valet';
-    if (nameLower.includes('lot')) return 'Parking Lot';
-    
-    return 'Parking Area';
-}
-
-// Old function - kept for backward compatibility
-function getParkingType(tags) {
-    if (tags.parking === 'underground') return 'Underground';
-    if (tags.parking === 'surface') return 'Open Air';
-    if (tags.parking === 'street_parking') return 'Street';
-    if (tags.parking === 'multi-storey') return 'Multi-level';
-    return 'Parking Lot';
-}
-
-// Fetch parking data from Overpass API (FREE - no payment required!)
-async function fetchFromOverpass(lat, lng, radius = 5) {
-    try {
-        // Convert radius from miles to kilometers to degrees (1 degree ≈ 111 km)
-        const radiusKm = radius * 1.60934; // miles to km
-        const radiusDegrees = radiusKm / 111;
-        
-        console.log(`Fetching from Overpass: radius=${radius} miles = ${radiusDegrees.toFixed(4)} degrees`);
-        
-                // Query for malls, hospitals, restaurants, supermarkets, and cinemas.
-        const overpassQuery = `[out:json];
+async function fetchFromOverpass(lat, lng) {
+    const query = `[out:json][timeout:20];
 (
-  node["shop"="mall"](${lat - radiusDegrees},${lng - radiusDegrees},${lat + radiusDegrees},${lng + radiusDegrees});
-  way["shop"="mall"](${lat - radiusDegrees},${lng - radiusDegrees},${lat + radiusDegrees},${lng + radiusDegrees});
-  
-  node["amenity"="hospital"](${lat - radiusDegrees},${lng - radiusDegrees},${lat + radiusDegrees},${lng + radiusDegrees});
-  way["amenity"="hospital"](${lat - radiusDegrees},${lng - radiusDegrees},${lat + radiusDegrees},${lng + radiusDegrees});
-
-    node["amenity"="restaurant"](${lat - radiusDegrees},${lng - radiusDegrees},${lat + radiusDegrees},${lng + radiusDegrees});
-    way["amenity"="restaurant"](${lat - radiusDegrees},${lng - radiusDegrees},${lat + radiusDegrees},${lng + radiusDegrees});
-
-    node["shop"="supermarket"](${lat - radiusDegrees},${lng - radiusDegrees},${lat + radiusDegrees},${lng + radiusDegrees});
-    way["shop"="supermarket"](${lat - radiusDegrees},${lng - radiusDegrees},${lat + radiusDegrees},${lng + radiusDegrees});
-
-    node["amenity"="cinema"](${lat - radiusDegrees},${lng - radiusDegrees},${lat + radiusDegrees},${lng + radiusDegrees});
-    way["amenity"="cinema"](${lat - radiusDegrees},${lng - radiusDegrees},${lat + radiusDegrees},${lng + radiusDegrees});
+  nwr["amenity"="parking"](around:1800,${lat},${lng});
+  nwr["shop"="mall"](around:1800,${lat},${lng});
+  nwr["amenity"="hospital"](around:1800,${lat},${lng});
+  nwr["amenity"="restaurant"](around:1800,${lat},${lng});
+  nwr["shop"="supermarket"](around:1800,${lat},${lng});
+  nwr["amenity"="cinema"](around:1800,${lat},${lng});
 );
-out center;`;
-        
-        const url = 'https://overpass-api.de/api/interpreter';
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 10000);
-        
-        const response = await fetch(url, {
-            method: 'POST',
-            body: overpassQuery,
-            signal: controller.signal
-        });
-        
-        clearTimeout(timeout);
-        if (!response.ok) throw new Error('API request failed');
-        
-        const data = await response.json();
-        console.log('Overpass API response:', data);
-        
-        if (!data.elements) {
-            console.log('No elements returned from Overpass API');
-            return [];
-        }
-        
-        const parkingLocations = [];
-        let id = 1;
-        
-        data.elements.forEach(element => {
-            let elemLat = element.lat || (element.center && element.center.lat);
-            let elemLng = element.lon || (element.center && element.center.lon);
-            
-            if (elemLat && elemLng) {
-                const name = element.tags.name || getDefaultName(element.tags);
-                const parkingType = getParkingTypeFromTags(element.tags);
-                const amenityType = getAmenityType(element.tags);
-                
-                console.log(`Found: ${name} (${amenityType}) - Type: ${parkingType}`);
-                
-                parkingLocations.push({
-                    id: id++,
-                    name: name,
-                    lat: elemLat,
-                    lng: elemLng,
-                    type: parkingType,
-                    amenity: amenityType,
-                    address: element.tags['addr:street'] || amenityType,
-                    distance: 0,
-                    source: 'osm'
-                });
-            }
-        });
-        
-        console.log(`Total locations found: ${parkingLocations.length}`);
-        return parkingLocations;
-        
-    } catch (error) {
-        console.error('Overpass API error:', error.message);
-        console.error('Full error:', error);
-        return [];
-    }
-}
+out center tags;`;
 
-// Get parking type from OSM tags
-function getParkingTypeFromTags(tags) {
-    if (tags.shop === 'mall') return 'Shopping Mall';
-    if (tags.amenity === 'hospital') return 'Hospital';
-    if (tags.amenity === 'restaurant') return 'Restaurant';
-    if (tags.shop === 'supermarket') return 'Supermarket';
-    if (tags.amenity === 'cinema') return 'Cinema Hall';
-    
-    return 'Parking Area';
-}
-
-// Get amenity type name
-function getAmenityType(tags) {
-    if (tags.shop === 'mall') return 'Shopping Mall';
-    if (tags.amenity === 'hospital') return 'Hospital';
-    if (tags.amenity === 'restaurant') return 'Restaurant';
-    if (tags.shop === 'supermarket') return 'Supermarket';
-    if (tags.amenity === 'cinema') return 'Cinema Hall';
-    
-    return 'Parking Area';
-}
-
-// Get default name if not available
-function getDefaultName(tags) {
-    const amenity = tags.amenity || tags.shop || tags.building || '';
-    return `${amenity.charAt(0).toUpperCase() + amenity.slice(1)} Area`;
-}
-
-// Generate fallback parking data - DISABLED (using real data only)
-function generateFallbackParking(centerLat, centerLng) {
-    return []; // No mock data - only real OpenStreetMap data is used
-}
-
-// Determine parking type from tags
-function getParkingType(tags) {
-    if (tags.parking === 'underground') return 'Underground';
-    if (tags.parking === 'surface') return 'Open Air';
-    if (tags.parking === 'street_parking') return 'Street';
-    if (tags.parking === 'multi-storey') return 'Multi-level';
-    if (tags.parking === 'garage') return 'Garage';
-    if (tags.amenity === 'parking_entrance') return 'Parking Entrance';
-    return 'Parking Lot';
-}
-
-// Generate random available spaces (in real app, would come from API)
-function generateRandomSpaces() {
-    return Math.floor(Math.random() * 450) + 50;
-}
-
-// Generate random hourly rate based on parking type
-function generateRandomRate(type) {
-    const rates = {
-        'Underground': Math.random() * 2 + 4,
-        'Multi-level': Math.random() * 2 + 3,
-        'Garage': Math.random() * 2 + 3.5,
-        'Street': Math.random() * 1 + 1,
-        'Open Air': Math.random() * 1.5 + 1.5,
-        'default': Math.random() * 2 + 2
-    };
-    return parseFloat((rates[type] || rates['default']).toFixed(2));
-}
-
-// Initialize map
-function initMap() {
-    map = L.map('map').setView([40.7128, -74.0060], 13);
-    
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        attribution: '© OpenStreetMap contributors',
-        maxZoom: 19
-    }).addTo(map);
-
-    // Ensure Leaflet calculates tile positions after layout settles.
-    setTimeout(() => map.invalidateSize(), 0);
-    window.addEventListener('resize', () => map.invalidateSize());
-
-    // Try to get user location
-    getUserLocation();
-}
-
-// Get user's location
-function getUserLocation() {
-    if (navigator.geolocation) {
-        navigator.geolocation.getCurrentPosition(
-            (position) => {
-                const { latitude, longitude } = position.coords;
-                setUserLocation(latitude, longitude);
-                findNearbyParking(latitude, longitude);
-            },
-            (error) => {
-                console.log('Geolocation error:', error);
-                document.getElementById('locationInfo').textContent = 'Location access denied. Using default location.';
-            }
-        );
-    }
-}
-
-// Set user location on map
-function setUserLocation(lat, lng) {
-    map.setView([lat, lng], 15);
-    
-    if (userMarker) {
-        map.removeLayer(userMarker);
-    }
-    
-    userMarker = L.marker([lat, lng], {
-        icon: L.icon({
-            iconUrl: 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI0MCIgaGVpZ2h0PSI0MCIgdmlld0JveD0iMCAwIDEwMCAxMDAiPjxjaXJjbGUgY3g9IjUwIiBjeT0iNTAiIHI9IjQ4IiBmaWxsPSIjNDI4NWY0Ii8+PGNpcmNsZSBjeD0iNTAiIGN5PSI1MCIgcj0iNDUiIGZpbGw9IiNmZmYiIHN0cm9rZT0iIzQyODVmNCIgc3Ryb2tlLXdpZHRoPSIyIi8+PHBhdGggZD0iTTMwIDQwIEw1MCAxNSBMNzAgNDAgWiIgZmlsbD0iIzQyODVmNCIvPjxjaXJjbGUgY3g9IjUwIiBjeT0iNTAiIHI9IjEyIiBmaWxsPSIjNDI4NWY0Ii8+PC9zdmc+',
-            iconSize: [40, 40],
-            iconAnchor: [20, 40],
-            popupAnchor: [0, -40]
-        })
-    }).addTo(map).bindPopup('Your current location');
-    
-    document.getElementById('locationInfo').textContent = `Latitude: ${lat.toFixed(4)}, Longitude: ${lng.toFixed(4)}`;
-}
-
-// Find nearby parking
-async function findNearbyParking(lat, lng, radius = 5) {
-    console.log(`Searching for parking near ${lat}, ${lng} within ${radius} miles...`);
-    clearMarkers();
-    document.getElementById('parkingList').innerHTML = '<p class="loading">Finding nearby places...</p>';
-    await fetchCctvParkingAreas();
-    
-    // Fetch real parking data from Overpass API
-    let fetchedParking = await fetchParkingData(lat, lng, radius);
-    console.log(`Fetched ${fetchedParking.length} locations from API with ${radius} mile radius`);
-    
-    // If no results, try with larger radius
-    if (fetchedParking.length === 0 && radius < 20) {
-        console.log('No results with initial radius, trying with 10 mile radius...');
-        fetchedParking = await fetchParkingData(lat, lng, 10);
-        console.log(`Fetched ${fetchedParking.length} locations with 10 mile radius`);
-    }
-    
-    // If still no results, try with even larger radius
-    if (fetchedParking.length === 0 && radius < 20) {
-        console.log('Still no results, trying with 15 mile radius...');
-        fetchedParking = await fetchParkingData(lat, lng, 15);
-        console.log(`Fetched ${fetchedParking.length} locations with 15 mile radius`);
-    }
-    
-    // Calculate distances and filter by radius
-    currentParkingData = fetchedParking.map(parking => {
-        parking.distance = calculateDistance(lat, lng, parking.lat, parking.lng);
-        return parking;
-    }).filter(parking => parking.distance <= 20); // Show within 20 miles
-    currentParkingData = attachCctvAvailability(currentParkingData);
-    
-    console.log(`Filtered to ${currentParkingData.length} locations within range`);
-    
-    currentParkingData.sort((a, b) => a.distance - b.distance);
-    
-    currentParkingData.forEach(parking => {
-        addMarkerToMap(parking);
+    const response = await fetch(`https://overpass-api.de/api/interpreter?${new URLSearchParams({ data: query })}`, {
+        headers: { Accept: 'application/json' }
     });
-    
-    displayParkingList(currentParkingData);
-    document.getElementById('parkingCount').textContent = `Places found: ${currentParkingData.length}`;
+
+    if (!response.ok) throw new Error('OpenStreetMap search failed.');
+    const data = await response.json();
+    const seen = new Set();
+
+    return (data.elements || [])
+        .map(element => ({
+            id: `osm-${element.type}-${element.id}`,
+            name: getName(element),
+            lat: element.lat ?? element.center?.lat,
+            lng: element.lon ?? element.center?.lon,
+            tags: element.tags || {},
+            adminAdded: false,
+            source: 'osm'
+        }))
+        .filter(element => {
+            if (!element.lat || !element.lng || seen.has(element.id)) return false;
+            seen.add(element.id);
+            return true;
+        });
 }
 
-// Calculate distance between two coordinates (haversine formula)
-function calculateDistance(lat1, lng1, lat2, lng2) {
-    const R = 3959; // Earth's radius in miles
-    const dLat = (lat2 - lat1) * Math.PI / 180;
-    const dLng = (lng2 - lng1) * Math.PI / 180;
-    const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-              Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
-              Math.sin(dLng / 2) * Math.sin(dLng / 2);
-    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-    return R * c;
+async function findParking(lat, lng) {
+    initUserMap();
+    currentOrigin = [Number(lat), Number(lng)];
+    userMap.setView(currentOrigin, 15);
+    userMarkers.clearLayers();
+    document.querySelector('#parking-list').innerHTML = '<p class="empty-state">Finding nearby parking...</p>';
+    setStatus('Finding parking around this area...');
+
+    const [savedResult, cctvResult, osmResult] = await Promise.allSettled([
+        fetchSavedAreas(),
+        fetchCctvParkingAreas(),
+        fetchFromOverpass(lat, lng)
+    ]);
+
+    const adminAreas = savedResult.status === 'fulfilled'
+        ? savedResult.value.map(area => ({ ...area, lng: area.lng ?? area.lon, adminAdded: true, source: 'admin' }))
+        : [];
+    const osmAreas = osmResult.status === 'fulfilled' ? osmResult.value : [];
+
+    savedAreas = adminAreas;
+    currentLocations = attachCctvAvailability([...adminAreas, ...osmAreas])
+        .map(area => ({ ...area, meters: distanceMeters(currentOrigin, area.lat, area.lng) }))
+        .filter(area => area.adminAdded || area.meters <= 3000)
+        .sort((a, b) => a.meters - b.meters);
+
+    renderParking(currentLocations);
+
+    if (currentLocations.length) {
+        const adminCount = adminAreas.length;
+        const osmCount = osmAreas.length;
+        setStatus(`${adminCount} admin area${adminCount === 1 ? '' : 's'} and ${osmCount} mapped place${osmCount === 1 ? '' : 's'} loaded.`);
+    } else if (savedResult.status === 'rejected' && osmResult.status === 'rejected') {
+        setStatus('Parking-area API and OpenStreetMap search are unavailable.');
+    } else if (cctvResult.status === 'rejected') {
+        setStatus('No parking found nearby. CCTV status could not be checked.');
+    } else {
+        setStatus('No parking found nearby.');
+    }
 }
 
-// Add marker to map
-function addMarkerToMap(parking) {
-    const icon = L.icon({
-        iconUrl: 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI0MCIgaGVpZ2h0PSI0MCIgdmlld0JveD0iMCAwIDEwMCAxMDAiPjxkZWZzPjxsaW5lYXJHcmFkaWVudCBpZD0iZ3JhZCIgeDE9IjAlIiB5MT0iMCUiIHgyPSIxMDAlIiB5Mj0iMTAwJSI+PHN0b3Agb2Zmc2V0PSIwJSIgc3R5bGU9InN0b3AtY29sb3I6IzY2N2VlYTtzdG9wLW9wYWNpdHk6MSIgLz48c3RvcCBvZmZzZXQ9IjEwMCUiIHN0eWxlPSJzdG9wLWNvbG9yOiM3NjRiYTI7c3RvcC1vcGFjaXR5OjEiIC8+PC9saW5lYXJHcmFkaWVudD48L2RlZnM+PGNpcmNsZSBjeD0iNTAiIGN5PSI1MCIgcj0iNDgiIGZpbGw9InVybCgjZ3JhZCkiLz48cGF0aCBkPSJNMjAgNTAgQTMwIDMwIDAgMCAxIDgwIDUwIEw4MCA2MCBRODAgNzAgNzAgODAgTDMwIDgwIFEyMCA3MCAyMCA2MCBaIiBmaWxsPSIjZmZmIiBzdHJva2U9IiM2NjdlZWEiIHN0cm9rZS13aWR0aD0iMiIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIvPjxjaXJjbGUgY3g9IjM1IiBjeT0iNzAiIHI9IjciIGZpbGw9IiM2NjdlZWEiLz48Y2lyY2xlIGN4PSI2NSIgY3k9IjcwIiByPSI3IiBmaWxsPSIjNjY3ZWVhIi8+PHJlY3QgeD0iMzAiIHk9IjMwIiB3aWR0aD0iNDAiIGhlaWdodD0iMjAiIGZpbGw9IiM2NjdlZWEiIG9wYWNpdHk9IjAuNiIgcng9IjMiLz48cmVjdCB4PSI0MCIgeT0iMjUiIHdpZHRoPSIyMCIgaGVpZ2h0PSIxNSIgZmlsbD0iI2ZmZiIgb3BhY2l0eT0iMC40IiByeD0iMiIvPjwvc3ZnPg==',
-        iconSize: [40, 40],
-        iconAnchor: [20, 40],
-        popupAnchor: [0, -40]
-    });
-    
-    const marker = L.marker([parking.lat, parking.lng], { icon }).addTo(map);
-    
-    const popupContent = `
-        <div style="width: 280px;">
-            <h4 style="margin: 0 0 10px 0; color: #667eea;">${escapeHtml(parking.name)}</h4>
-            <p><strong>Type:</strong> ${escapeHtml(parking.amenity || parking.type)}</p>
-            <p><strong>Category:</strong> ${escapeHtml(parking.type)}</p>
-            <p><strong>Address:</strong> ${escapeHtml(parking.address)}</p>
-            <p><strong>Latitude:</strong> ${parking.lat.toFixed(6)}</p>
-            <p><strong>Longitude:</strong> ${parking.lng.toFixed(6)}</p>
-            <p><strong>Distance:</strong> ${parking.distance.toFixed(2)} miles</p>
-            ${renderAvailability(parking.cctvStatus)}
-        </div>
-    `;
-    
-    marker.bindPopup(popupContent);
-    parkingMarkers.push(marker);
-}
+function renderParking(locations) {
+    const list = document.querySelector('#parking-list');
+    document.querySelector('#result-count').textContent = `${locations.length} spot${locations.length === 1 ? '' : 's'}`;
+    userMarkers.clearLayers();
 
-// Clear all markers
-function clearMarkers() {
-    parkingMarkers.forEach(marker => map.removeLayer(marker));
-    parkingMarkers = [];
-}
+    if (!locations.length) {
+        list.innerHTML = '<p class="empty-state">No parking areas were mapped around this location.</p>';
+        return;
+    }
 
-// Display parking list
-function displayParkingList(parkings) {
-    const listContainer = document.getElementById('parkingList');
-    
-    if (parkings.length === 0) {
-        listContainer.innerHTML = `
-            <div class="placeholder">
-                <p><strong>No parking areas found nearby.</strong></p>
-                <p>This could mean:</p>
-                <ul>
-                    <li>You're in a rural area with limited amenities</li>
-                    <li>OpenStreetMap data is sparse in your location</li>
-                    <li>The Overpass API server is temporarily busy</li>
-                </ul>
-                <p>Try:</p>
-                <ul>
-                    <li>Searching for a different city/location</li>
-                    <li>Trying again in a few moments</li>
-                    <li>Zooming out on the map to see a wider area</li>
-                </ul>
-            </div>
+    const bounds = [];
+    list.innerHTML = '';
+
+    locations.forEach(spot => {
+        const name = getName(spot);
+        const lat = Number(spot.lat);
+        const lng = Number(spot.lng ?? spot.lon);
+        const label = distanceLabel(spot.meters);
+        const liveStatus = spot.cctvStatus;
+        const adminAvailability = spot.adminAdded ? `${spot.availableSlots} free / ${spot.totalSlots} slots` : null;
+        const liveAvailability = liveStatus && !liveStatus.error ? `${liveStatus.available} free / ${liveStatus.capacity} live units` : null;
+        const availability = liveAvailability || adminAvailability || spot.tags?.capacity || spot.tags?.access || getCategory(spot.tags);
+        const markerIcon = liveStatus || spot.adminAdded ? livePinIcon : pinIcon;
+        const popupMeta = liveAvailability || adminAvailability || label;
+        const marker = L.marker([lat, lng], { icon: markerIcon })
+            .bindPopup(`<b>${escapeHtml(name)}</b><br><small>${escapeHtml(popupMeta)}</small>`)
+            .addTo(userMarkers);
+
+        bounds.push([lat, lng]);
+
+        const item = document.createElement('button');
+        item.className = 'parking-item';
+        item.type = 'button';
+        item.innerHTML = `
+            <span class="parking-icon">P</span>
+            <span>
+                <span class="parking-name">${escapeHtml(name)}</span>
+                <span class="parking-meta">${spot.adminAdded ? 'Admin-added - ' : ''}${escapeHtml(availability)}</span>
+                ${liveStatus?.error ? `<span class="parking-meta error-text">CCTV unavailable: ${escapeHtml(liveStatus.error)}</span>` : ''}
+            </span>
+            <span class="parking-distance">${label}</span>
         `;
-        return;
-    }
-    
-    listContainer.innerHTML = parkings.map(parking => `
-        <div class="parking-item" onclick="focusMarker(${parking.lat}, ${parking.lng})">
-            <h3>${escapeHtml(parking.name)}</h3>
-            <p><strong>Location Type:</strong> ${escapeHtml(parking.amenity || parking.type)}</p>
-            <p><strong>Category:</strong> <span class="type">${escapeHtml(parking.type)}</span></p>
-            <p><strong>Latitude:</strong> ${parking.lat.toFixed(6)}</p>
-            <p><strong>Longitude:</strong> ${parking.lng.toFixed(6)}</p>
-            <div class="${parking.cctvStatus ? 'availability live' : 'availability unavailable'}">
-                ${parking.cctvStatus
-                    ? `Live parking: ${parking.cctvStatus.available} / ${parking.cctvStatus.capacity} units available`
-                    : 'No live CCTV parking data'}
-            </div>
-            <p class="distance">Distance: ${parking.distance.toFixed(2)} miles</p>
-        </div>
-    `).join('');
-}
-
-// Focus on marker when clicked from list
-function focusMarker(lat, lng) {
-    map.setView([lat, lng], 16);
-}
-
-// Search by place name
-function searchByPlace() {
-    const searchInput = document.getElementById('searchInput').value.trim();
-    
-    if (!searchInput) {
-        alert('Please enter a place name');
-        return;
-    }
-    
-    // Using OpenStreetMap Nominatim API
-    const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(searchInput)}&format=json&limit=1`;
-    
-    document.getElementById('parkingList').innerHTML = '<p class="loading">Searching...</p>';
-    
-    fetch(url)
-        .then(response => response.json())
-        .then(data => {
-            if (data && data.length > 0) {
-                const result = data[0];
-                const lat = parseFloat(result.lat);
-                const lng = parseFloat(result.lon);
-                
-                console.log(`Found location: ${result.display_name} at ${lat}, ${lng}`);
-                
-                setUserLocation(lat, lng);
-                findNearbyParking(lat, lng, 10); // Start with 10 mile radius for searches
-                document.getElementById('locationInfo').textContent = `Searched location: ${result.display_name}`;
-            } else {
-                alert('Location not found. Please try another search.');
-                document.getElementById('parkingList').innerHTML = '<p class="placeholder">No results found for your search. Try a different location name.</p>';
-            }
-        })
-        .catch(error => {
-            console.error('Search error:', error);
-            alert('Error searching location. Please try again.');
-            document.getElementById('parkingList').innerHTML = '<p class="placeholder">Error during search. Please try again.</p>';
+        item.addEventListener('click', () => {
+            userMap.setView([lat, lng], 17);
+            marker.openPopup();
         });
+        list.appendChild(item);
+    });
+
+    if (bounds.length) {
+        userMap.fitBounds(bounds, { padding: [38, 38], maxZoom: 16 });
+    }
 }
 
-// Event listeners
-document.getElementById('searchBtn').addEventListener('click', searchByPlace);
-document.getElementById('searchInput').addEventListener('keypress', (e) => {
-    if (e.key === 'Enter') searchByPlace();
+async function refreshUserAvailability() {
+    if (!currentOrigin || document.querySelector('#user-portal').classList.contains('hidden')) return;
+
+    try {
+        await fetchCctvParkingAreas();
+        const freshAreas = await fetchSavedAreas();
+        const byId = new Map(freshAreas.map(area => [area.id, area]));
+        currentLocations = attachCctvAvailability(currentLocations.map(spot => {
+            if (!spot.adminAdded || !byId.has(spot.id)) return spot;
+            return { ...byId.get(spot.id), lng: byId.get(spot.id).lng ?? byId.get(spot.id).lon, adminAdded: true, source: 'admin' };
+        })).map(area => ({ ...area, meters: distanceMeters(currentOrigin, area.lat, area.lng ?? area.lon) }));
+        renderParking(currentLocations);
+    } catch {
+        // Keep the last rendered data if the local API is briefly unavailable.
+    }
+}
+
+async function geocode(term) {
+    const response = await fetch(`https://nominatim.openstreetmap.org/search?${new URLSearchParams({
+        format: 'jsonv2',
+        limit: '1',
+        q: term
+    })}`);
+    const places = await response.json();
+    if (!places.length) throw new Error('Location not found.');
+    return places[0];
+}
+
+function setUserLocation(lat, lng) {
+    initUserMap();
+    const pos = [Number(lat), Number(lng)];
+    if (userMarker) userMarker.remove();
+    userMarker = L.marker(pos, { icon: userIcon }).addTo(userMap).bindPopup('Your current location');
+    userMap.setView(pos, 15);
+    findParking(pos[0], pos[1]);
+}
+
+function selectAdminLocation(lat, lng, label) {
+    initAdminMap();
+    selectedAdminPoint = L.latLng(Number(lat), Number(lng));
+    if (selectedAdminMarker) selectedAdminMarker.remove();
+    selectedAdminMarker = L.marker(selectedAdminPoint, { icon: livePinIcon }).addTo(adminMap);
+    adminMap.setView(selectedAdminPoint, 16);
+    document.querySelector('#selected-location').textContent = label || `${selectedAdminPoint.lat.toFixed(5)}, ${selectedAdminPoint.lng.toFixed(5)}`;
+    document.querySelector('#save-area').disabled = false;
+}
+
+function renderSavedAreas(areas) {
+    const saved = document.querySelector('#saved-areas');
+    document.querySelector('#saved-count').textContent = `${areas.length} area${areas.length === 1 ? '' : 's'}`;
+    adminMarkers.clearLayers();
+
+    if (!areas.length) {
+        saved.innerHTML = '<p class="empty-state">No areas saved yet.</p>';
+        return;
+    }
+
+    saved.innerHTML = '';
+    areas.forEach(area => {
+        const lat = Number(area.lat);
+        const lng = Number(area.lng ?? area.lon);
+        L.marker([lat, lng], { icon: livePinIcon }).bindPopup(`<b>${escapeHtml(area.name)}</b>`).addTo(adminMarkers);
+
+        const item = document.createElement('button');
+        item.className = 'parking-item';
+        item.type = 'button';
+        item.innerHTML = `
+            <span class="parking-icon">P</span>
+            <span>
+                <span class="parking-name">${escapeHtml(area.name)}</span>
+                <span class="parking-meta">${area.availableSlots} free / ${area.totalSlots} slots</span>
+            </span>
+        `;
+        item.addEventListener('click', () => adminMap.setView([lat, lng], 17));
+        saved.appendChild(item);
+    });
+}
+
+async function loadAdminAreas() {
+    initAdminMap();
+    try {
+        savedAreas = await fetchSavedAreas();
+        renderSavedAreas(savedAreas);
+    } catch {
+        document.querySelector('#saved-areas').innerHTML = '<p class="empty-state">Parking-area API unavailable. Start the Python backend.</p>';
+    }
+}
+
+function updateAvailableSlots() {
+    const total = Number(document.querySelector('#total-slots').value);
+    const occupied = Number(document.querySelector('#occupied-slots').value);
+    const valid = Number.isInteger(total) && Number.isInteger(occupied) && total >= 0 && occupied >= 0;
+    document.querySelector('#available-slots').textContent = valid
+        ? `Available slots: ${Math.max(0, total - occupied)}`
+        : 'Available slots: -';
+}
+
+function clearAdminForm() {
+    document.querySelector('#area-name').value = '';
+    document.querySelector('#admin-address').value = '';
+    document.querySelector('#camera-url').value = '';
+    document.querySelector('#total-slots').value = '';
+    document.querySelector('#occupied-slots').value = '';
+    document.querySelector('#available-slots').textContent = 'Available slots: -';
+    document.querySelector('#selected-location').textContent = 'Enter a location or select a point on the map';
+    document.querySelector('#save-area').disabled = true;
+    selectedAdminPoint = null;
+    if (selectedAdminMarker) {
+        selectedAdminMarker.remove();
+        selectedAdminMarker = null;
+    }
+}
+
+document.querySelectorAll('.role-tab').forEach(tab => tab.addEventListener('click', () => {
+    document.querySelectorAll('.role-tab').forEach(item => {
+        const active = item === tab;
+        item.classList.toggle('active', active);
+        item.setAttribute('aria-selected', String(active));
+    });
+
+    const admin = tab.dataset.role === 'admin';
+    document.querySelector('#auth-title').textContent = admin ? 'Sign in to manage parking' : 'Sign in to find parking';
+    document.querySelector('#sign-in-button').innerHTML = `Sign in as ${admin ? 'admin' : 'user'} <span>+</span>`;
+}));
+
+document.querySelector('#sign-in-form').addEventListener('submit', event => {
+    event.preventDefault();
+    const role = document.querySelector('.role-tab.active').dataset.role;
+    document.querySelector('#auth-screen').classList.add('hidden');
+    document.querySelector(`#${role}-portal`).classList.remove('hidden');
+
+    setTimeout(() => {
+        if (role === 'user') {
+            initUserMap();
+            userMap.invalidateSize();
+            if (!userPortalLoaded) {
+                userPortalLoaded = true;
+                findParking(DEFAULT_CENTER[0], DEFAULT_CENTER[1]);
+            }
+        } else {
+            initAdminMap();
+            adminMap.invalidateSize();
+            if (!adminPortalLoaded) {
+                adminPortalLoaded = true;
+                loadAdminAreas();
+            }
+        }
+    }, 50);
 });
 
-document.getElementById('locationBtn').addEventListener('click', getUserLocation);
+document.querySelectorAll('[data-sign-out]').forEach(button => button.addEventListener('click', () => {
+    document.querySelectorAll('.portal').forEach(portal => portal.classList.add('hidden'));
+    document.querySelector('#auth-screen').classList.remove('hidden');
+}));
 
-// Initialize on load
-window.addEventListener('load', initMap);
+document.querySelector('#search-form').addEventListener('submit', async event => {
+    event.preventDefault();
+    const term = document.querySelector('#address').value.trim();
+    if (!term) return document.querySelector('#address').focus();
+
+    setStatus('Locating your destination...');
+    try {
+        const place = await geocode(term);
+        findParking(place.lat, place.lon);
+    } catch {
+        setStatus('We could not find that address. Try a more specific place name.');
+    }
+});
+
+document.querySelector('#location-button').addEventListener('click', () => {
+    if (!navigator.geolocation) {
+        setStatus('Your browser does not support location services.');
+        return;
+    }
+
+    navigator.geolocation.getCurrentPosition(
+        ({ coords }) => setUserLocation(coords.latitude, coords.longitude),
+        () => setStatus('We could not access your location. Check browser permissions.'),
+        { enableHighAccuracy: true, timeout: 10000 }
+    );
+});
+
+document.querySelector('#zoom-in').addEventListener('click', () => userMap?.zoomIn());
+document.querySelector('#zoom-out').addEventListener('click', () => userMap?.zoomOut());
+
+document.querySelector('#locate-area').addEventListener('click', async () => {
+    const term = document.querySelector('#admin-address').value.trim();
+    if (!term) return document.querySelector('#admin-address').focus();
+
+    const button = document.querySelector('#locate-area');
+    button.disabled = true;
+    button.textContent = 'Finding';
+
+    try {
+        const place = await geocode(term);
+        selectAdminLocation(place.lat, place.lon, place.display_name.split(',').slice(0, 2).join(','));
+    } catch {
+        document.querySelector('#selected-location').textContent = 'Location not found. Try a more specific address.';
+    } finally {
+        button.disabled = false;
+        button.textContent = 'Locate';
+    }
+});
+
+document.querySelector('#admin-current-location').addEventListener('click', () => {
+    const locationStatus = document.querySelector('#selected-location');
+    if (!navigator.geolocation) {
+        locationStatus.textContent = 'Your browser does not support location services.';
+        return;
+    }
+
+    locationStatus.textContent = 'Requesting your current location...';
+    navigator.geolocation.getCurrentPosition(
+        ({ coords }) => selectAdminLocation(coords.latitude, coords.longitude, 'Your current location'),
+        () => { locationStatus.textContent = 'We could not access your location. Check browser permissions.'; },
+        { enableHighAccuracy: true, timeout: 10000 }
+    );
+});
+
+document.querySelector('#save-area').addEventListener('click', async () => {
+    if (!selectedAdminPoint) return;
+
+    const totalSlots = Number(document.querySelector('#total-slots').value);
+    const occupiedSlots = Number(document.querySelector('#occupied-slots').value);
+    if (!Number.isInteger(totalSlots) || totalSlots < 1 || !Number.isInteger(occupiedSlots) || occupiedSlots < 0 || occupiedSlots > totalSlots) {
+        document.querySelector('#available-slots').textContent = 'Enter valid slot counts.';
+        return;
+    }
+
+    const button = document.querySelector('#save-area');
+    button.disabled = true;
+    button.firstChild.textContent = 'Saving parking area ';
+
+    try {
+        const body = {
+            name: document.querySelector('#area-name').value.trim() || `Parking area ${savedAreas.length + 1}`,
+            lat: selectedAdminPoint.lat,
+            lng: selectedAdminPoint.lng,
+            cameraUrl: document.querySelector('#camera-url').value.trim(),
+            totalSlots,
+            occupiedSlots
+        };
+
+        const response = await fetch(API_CONFIG.PARKING_AREAS_API, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+        });
+
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || 'Could not save parking area.');
+
+        savedAreas.unshift(payload);
+        renderSavedAreas(savedAreas);
+        clearAdminForm();
+    } catch (error) {
+        document.querySelector('#selected-location').textContent = error.message || 'Could not save. Check the backend.';
+        button.disabled = false;
+    } finally {
+        button.firstChild.textContent = 'Save parking area ';
+    }
+});
+
+document.querySelector('#total-slots').addEventListener('input', updateAvailableSlots);
+document.querySelector('#occupied-slots').addEventListener('input', updateAvailableSlots);
+
+window.setInterval(refreshUserAvailability, 10000);

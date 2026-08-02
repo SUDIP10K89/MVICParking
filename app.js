@@ -72,17 +72,54 @@ function setStatus(message) {
 }
 
 function getName(item) {
-    return item.name || item.tags?.name || item.tags?.operator || (item.adminAdded ? 'Admin parking area' : 'Parking area');
+    return item.name || 'Admin parking area';
 }
 
-function getCategory(tags = {}) {
-    if (tags.amenity === 'parking') return 'Mapped parking';
-    if (tags.shop === 'mall') return 'Shopping mall';
-    if (tags.amenity === 'hospital') return 'Hospital';
-    if (tags.amenity === 'restaurant') return 'Restaurant';
-    if (tags.shop === 'supermarket') return 'Supermarket';
-    if (tags.amenity === 'cinema') return 'Cinema hall';
-    return 'Parking area';
+function renderCctvPreview(cameraUrl) {
+    if (!cameraUrl) {
+        return '<p class="popup-muted">No CCTV URL configured.</p>';
+    }
+
+    const safeUrl = escapeHtml(cameraUrl);
+    if (cameraUrl.toLowerCase().startsWith('rtsp://')) {
+        return `
+            <div class="cctv-fallback">
+                <p>RTSP streams cannot be previewed directly in most browsers.</p>
+                <a href="${safeUrl}" target="_blank" rel="noreferrer">Open CCTV stream</a>
+            </div>
+        `;
+    }
+
+    return `
+        <div class="cctv-preview">
+            <img src="${safeUrl}" alt="CCTV feed for this parking area" loading="lazy">
+            <a href="${safeUrl}" target="_blank" rel="noreferrer">Open CCTV feed</a>
+        </div>
+    `;
+}
+
+function renderParkingPopup(area, liveStatus = null) {
+    const totalSlots = Number(area.totalSlots ?? area.capacity ?? 0);
+    const occupiedSlots = Number(area.occupiedSlots ?? area.occupied ?? 0);
+    const availableSlots = liveStatus && !liveStatus.error
+        ? Number(liveStatus.available)
+        : Number(area.availableSlots ?? Math.max(0, totalSlots - occupiedSlots));
+    const capacity = liveStatus && !liveStatus.error ? Number(liveStatus.capacity) : totalSlots;
+    const occupied = liveStatus && !liveStatus.error ? Number(liveStatus.occupied) : occupiedSlots;
+
+    return `
+        <div class="parking-popup">
+            <h3>${escapeHtml(getName(area))}</h3>
+            <div class="popup-stat">
+                <strong>${availableSlots}</strong>
+                <span>available of ${capacity} slots</span>
+            </div>
+            <p><b>Occupied:</b> ${occupied}</p>
+            ${liveStatus?.error ? `<p class="popup-error"><b>CCTV status:</b> ${escapeHtml(liveStatus.error)}</p>` : ''}
+            ${liveStatus && !liveStatus.error ? '<p class="popup-live">Live CCTV count active</p>' : ''}
+            ${renderCctvPreview(area.cameraUrl || '')}
+        </div>
+    `;
 }
 
 function initUserMap() {
@@ -137,80 +174,39 @@ function attachCctvAvailability(places) {
     return places.map(place => ({ ...place, cctvStatus: findMatchingCctvArea(place) || null }));
 }
 
-async function fetchFromOverpass(lat, lng) {
-    const query = `[out:json][timeout:20];
-(
-  nwr["amenity"="parking"](around:1800,${lat},${lng});
-  nwr["shop"="mall"](around:1800,${lat},${lng});
-  nwr["amenity"="hospital"](around:1800,${lat},${lng});
-  nwr["amenity"="restaurant"](around:1800,${lat},${lng});
-  nwr["shop"="supermarket"](around:1800,${lat},${lng});
-  nwr["amenity"="cinema"](around:1800,${lat},${lng});
-);
-out center tags;`;
-
-    const response = await fetch(`https://overpass-api.de/api/interpreter?${new URLSearchParams({ data: query })}`, {
-        headers: { Accept: 'application/json' }
-    });
-
-    if (!response.ok) throw new Error('OpenStreetMap search failed.');
-    const data = await response.json();
-    const seen = new Set();
-
-    return (data.elements || [])
-        .map(element => ({
-            id: `osm-${element.type}-${element.id}`,
-            name: getName(element),
-            lat: element.lat ?? element.center?.lat,
-            lng: element.lon ?? element.center?.lon,
-            tags: element.tags || {},
-            adminAdded: false,
-            source: 'osm'
-        }))
-        .filter(element => {
-            if (!element.lat || !element.lng || seen.has(element.id)) return false;
-            seen.add(element.id);
-            return true;
-        });
-}
-
 async function findParking(lat, lng) {
     initUserMap();
     currentOrigin = [Number(lat), Number(lng)];
     userMap.setView(currentOrigin, 15);
     userMarkers.clearLayers();
-    document.querySelector('#parking-list').innerHTML = '<p class="empty-state">Finding nearby parking...</p>';
-    setStatus('Finding parking around this area...');
+    document.querySelector('#parking-list').innerHTML = '<p class="empty-state">Loading admin-added parking areas...</p>';
+    setStatus('Loading admin-added parking areas...');
 
-    const [savedResult, cctvResult, osmResult] = await Promise.allSettled([
+    const [savedResult, cctvResult] = await Promise.allSettled([
         fetchSavedAreas(),
-        fetchCctvParkingAreas(),
-        fetchFromOverpass(lat, lng)
+        fetchCctvParkingAreas()
     ]);
 
     const adminAreas = savedResult.status === 'fulfilled'
         ? savedResult.value.map(area => ({ ...area, lng: area.lng ?? area.lon, adminAdded: true, source: 'admin' }))
         : [];
-    const osmAreas = osmResult.status === 'fulfilled' ? osmResult.value : [];
 
     savedAreas = adminAreas;
-    currentLocations = attachCctvAvailability([...adminAreas, ...osmAreas])
+    currentLocations = attachCctvAvailability(adminAreas)
         .map(area => ({ ...area, meters: distanceMeters(currentOrigin, area.lat, area.lng) }))
-        .filter(area => area.adminAdded || area.meters <= 3000)
+        .filter(area => area.meters <= 10000)
         .sort((a, b) => a.meters - b.meters);
 
     renderParking(currentLocations);
 
     if (currentLocations.length) {
-        const adminCount = adminAreas.length;
-        const osmCount = osmAreas.length;
-        setStatus(`${adminCount} admin area${adminCount === 1 ? '' : 's'} and ${osmCount} mapped place${osmCount === 1 ? '' : 's'} loaded.`);
-    } else if (savedResult.status === 'rejected' && osmResult.status === 'rejected') {
-        setStatus('Parking-area API and OpenStreetMap search are unavailable.');
+        setStatus(`${currentLocations.length} admin-added parking area${currentLocations.length === 1 ? '' : 's'} found near this location.`);
+    } else if (savedResult.status === 'rejected') {
+        setStatus('Parking-area API is unavailable. Start the Python backend.');
     } else if (cctvResult.status === 'rejected') {
-        setStatus('No parking found nearby. CCTV status could not be checked.');
+        setStatus('No admin-added parking areas found nearby. CCTV status could not be checked.');
     } else {
-        setStatus('No parking found nearby.');
+        setStatus('No admin-added parking areas found nearby.');
     }
 }
 
@@ -220,7 +216,7 @@ function renderParking(locations) {
     userMarkers.clearLayers();
 
     if (!locations.length) {
-        list.innerHTML = '<p class="empty-state">No parking areas were mapped around this location.</p>';
+        list.innerHTML = '<p class="empty-state">No admin-added parking areas were found around this location.</p>';
         return;
     }
 
@@ -235,11 +231,10 @@ function renderParking(locations) {
         const liveStatus = spot.cctvStatus;
         const adminAvailability = spot.adminAdded ? `${spot.availableSlots} free / ${spot.totalSlots} slots` : null;
         const liveAvailability = liveStatus && !liveStatus.error ? `${liveStatus.available} free / ${liveStatus.capacity} live units` : null;
-        const availability = liveAvailability || adminAvailability || spot.tags?.capacity || spot.tags?.access || getCategory(spot.tags);
+        const availability = liveAvailability || adminAvailability || 'Admin-added parking area';
         const markerIcon = liveStatus || spot.adminAdded ? livePinIcon : pinIcon;
-        const popupMeta = liveAvailability || adminAvailability || label;
         const marker = L.marker([lat, lng], { icon: markerIcon })
-            .bindPopup(`<b>${escapeHtml(name)}</b><br><small>${escapeHtml(popupMeta)}</small>`)
+            .bindPopup(renderParkingPopup(spot, liveStatus), { maxWidth: 330 })
             .addTo(userMarkers);
 
         bounds.push([lat, lng]);
@@ -329,7 +324,9 @@ function renderSavedAreas(areas) {
     areas.forEach(area => {
         const lat = Number(area.lat);
         const lng = Number(area.lng ?? area.lon);
-        L.marker([lat, lng], { icon: livePinIcon }).bindPopup(`<b>${escapeHtml(area.name)}</b>`).addTo(adminMarkers);
+        const marker = L.marker([lat, lng], { icon: livePinIcon })
+            .bindPopup(renderParkingPopup(area), { maxWidth: 330 })
+            .addTo(adminMarkers);
 
         const item = document.createElement('button');
         item.className = 'parking-item';
@@ -341,7 +338,10 @@ function renderSavedAreas(areas) {
                 <span class="parking-meta">${area.availableSlots} free / ${area.totalSlots} slots</span>
             </span>
         `;
-        item.addEventListener('click', () => adminMap.setView([lat, lng], 17));
+        item.addEventListener('click', () => {
+            adminMap.setView([lat, lng], 17);
+            marker.openPopup();
+        });
         saved.appendChild(item);
     });
 }

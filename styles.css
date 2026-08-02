@@ -468,6 +468,87 @@ footer a {
     border-radius: 8px;
 }
 
+.leaflet-popup-content {
+    width: 300px !important;
+    margin: 14px;
+}
+
+.parking-popup h3 {
+    margin: 0 0 10px;
+    color: var(--ink);
+    font-size: 15px;
+    line-height: 1.25;
+}
+
+.parking-popup p {
+    margin: 7px 0;
+    color: var(--soft-ink);
+    font-size: 12px;
+    line-height: 1.45;
+}
+
+.popup-stat {
+    display: grid;
+    gap: 2px;
+    padding: 10px 12px;
+    color: var(--ink);
+    background: #e7f6b1;
+    border: 1px solid #c9df83;
+    border-radius: 8px;
+}
+
+.popup-stat strong {
+    font-size: 24px;
+    line-height: 1;
+}
+
+.popup-stat span,
+.popup-muted,
+.popup-live,
+.popup-error,
+.cctv-preview a,
+.cctv-fallback a {
+    font-family: DM Mono, monospace;
+    font-size: 10px;
+}
+
+.popup-live {
+    color: #607300 !important;
+}
+
+.popup-error {
+    color: var(--danger) !important;
+}
+
+.cctv-preview {
+    display: grid;
+    gap: 7px;
+    margin-top: 10px;
+}
+
+.cctv-preview img {
+    width: 100%;
+    aspect-ratio: 16 / 9;
+    object-fit: cover;
+    background: #101813;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+}
+
+.cctv-preview a,
+.cctv-fallback a {
+    color: var(--ink);
+    font-weight: 700;
+}
+
+.cctv-fallback {
+    margin-top: 10px;
+    padding: 10px;
+    background: #f7f8f2;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+}
+
 .map-controls {
     position: absolute;
     top: 24px;

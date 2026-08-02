@@ -27,12 +27,12 @@ def parse_source(source: str) -> int | str:
 PARKING_AREAS: dict[str, dict[str, Any]] = {
     "demo-parking": {
         "name": "Bajeko Bhojanalaya",
-        "source": "rtsp://172.18.0.82:8080/h264.sdp",
+        "source": "http://192.168.242.84:8080/video",
         "capacity": 60,
         "lat": 27.705168,
         "lng": 85.328717,
         "match_radius_meters": 200,
-        "process_every_n_frames": 20,
+        "process_every_n_frames": 1,
         "resize_width": 640,
     }
 }

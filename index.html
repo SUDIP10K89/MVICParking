@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PARK WITH PYRS - Live Parking Finder</title>
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 200 200'><rect width='200' height='200' fill='%23122c3a' rx='40'/><path d='M58 150V46h48c24 0 40 15 40 37s-16 38-40 38H86v29H58zm28-55h17c10 0 16-5 16-13s-6-13-16-13H86v26z' fill='%23ffffff'/><circle cx='150' cy='150' r='16' fill='%232ec4b6'/></svg>">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="app-shell">
+        <header class="app-header">
+            <div>
+                <p class="eyebrow">Live CCTV parking intelligence</p>
+                <h1>PARK WITH PYRS</h1>
+            </div>
+            <div class="header-badge">
+                <span class="status-dot"></span>
+                CCTV-ready
+            </div>
+        </header>
+
+        <main class="app-main">
+            <section class="controls-panel" aria-label="Search and location controls">
+                <div class="search-controls">
+                    <div class="search-box">
+                        <input
+                            type="text"
+                            id="searchInput"
+                            placeholder="Search a place, mall, hospital, restaurant..."
+                            autocomplete="off"
+                        >
+                        <button id="searchBtn" type="button">Search</button>
+                    </div>
+                    <button id="locationBtn" class="location-btn" type="button">Use My Location</button>
+                </div>
+            </section>
+
+            <section class="status-panel" aria-live="polite">
+                <div class="info-bar">
+                    <span id="locationInfo">Loading map...</span>
+                    <span id="parkingCount">Parking areas: 0</span>
+                </div>
+            </section>
+
+            <div class="workspace">
+                <section class="map-panel" aria-label="Map">
+                    <div class="panel-heading">
+                        <h2>Map View</h2>
+                        <span>OpenStreetMap + live CCTV matches</span>
+                    </div>
+                    <div id="map"></div>
+                </section>
+
+                <section class="parking-list" aria-label="Nearby places list">
+                    <div class="panel-heading">
+                        <h2>Nearby Places</h2>
+                        <span>Availability appears only for configured CCTV areas</span>
+                    </div>
+                    <div id="parkingList" class="list-container">
+                        <p class="placeholder">Search or use your location to find nearby places and CCTV-backed parking availability.</p>
+                    </div>
+                </section>
+            </div>
+        </main>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>

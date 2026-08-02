@@ -1,0 +1,434 @@
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+:root {
+    --bg: #eef3f5;
+    --surface: #ffffff;
+    --surface-soft: #f6f8fa;
+    --ink: #14232b;
+    --muted: #61717b;
+    --line: #dbe4e8;
+    --primary: #122c3a;
+    --primary-soft: #e7eff2;
+    --accent: #2ec4b6;
+    --accent-deep: #128a82;
+    --success-bg: #e8f7ed;
+    --success-text: #176b3a;
+    --warn-bg: #f3f5f7;
+    --warn-text: #65727a;
+    --shadow: 0 14px 40px rgba(17, 35, 43, 0.11);
+    --shadow-soft: 0 8px 24px rgba(17, 35, 43, 0.08);
+}
+
+body {
+    min-height: 100vh;
+    font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+    background:
+        linear-gradient(135deg, rgba(46, 196, 182, 0.13), transparent 34%),
+        linear-gradient(315deg, rgba(255, 159, 67, 0.12), transparent 30%),
+        var(--bg);
+    color: var(--ink);
+}
+
+button,
+input {
+    font: inherit;
+}
+
+.app-shell {
+    width: min(1440px, 100%);
+    margin: 0 auto;
+    padding: 20px;
+}
+
+.app-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    margin-bottom: 16px;
+    padding: 22px 24px;
+    color: white;
+    background:
+        linear-gradient(135deg, rgba(18, 44, 58, 0.96), rgba(21, 73, 87, 0.96)),
+        var(--primary);
+    border-radius: 8px;
+    box-shadow: var(--shadow);
+}
+
+.eyebrow {
+    margin-bottom: 4px;
+    color: rgba(255, 255, 255, 0.76);
+    font-size: 0.78rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+.app-header h1 {
+    font-size: clamp(2rem, 5vw, 4.2rem);
+    line-height: 0.95;
+    font-weight: 850;
+    letter-spacing: 0;
+}
+
+.header-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 9px;
+    flex: 0 0 auto;
+    padding: 10px 13px;
+    color: #d9fffb;
+    background-color: rgba(255, 255, 255, 0.1);
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    border-radius: 999px;
+    font-size: 0.92rem;
+    font-weight: 800;
+}
+
+.status-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background-color: var(--accent);
+    box-shadow: 0 0 0 5px rgba(46, 196, 182, 0.16);
+}
+
+.app-main {
+    display: grid;
+    gap: 14px;
+}
+
+.controls-panel,
+.status-panel,
+.map-panel,
+.parking-list {
+    background-color: rgba(255, 255, 255, 0.94);
+    border: 1px solid rgba(219, 228, 232, 0.95);
+    border-radius: 8px;
+    box-shadow: var(--shadow-soft);
+}
+
+.controls-panel {
+    padding: 14px;
+}
+
+.search-controls {
+    display: flex;
+    gap: 12px;
+}
+
+.search-box {
+    display: flex;
+    flex: 1;
+    min-width: 0;
+    gap: 10px;
+}
+
+.search-box input {
+    width: 100%;
+    min-height: 46px;
+    padding: 0 15px;
+    color: var(--ink);
+    background-color: var(--surface-soft);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    outline: none;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease, background-color 0.2s ease;
+}
+
+.search-box input:focus {
+    background-color: white;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 4px rgba(46, 196, 182, 0.16);
+}
+
+.search-box button,
+.location-btn {
+    min-height: 46px;
+    padding: 0 18px;
+    border: 0;
+    border-radius: 8px;
+    font-weight: 800;
+    cursor: pointer;
+    transition: transform 0.2s ease, box-shadow 0.2s ease, background-color 0.2s ease;
+}
+
+.search-box button {
+    color: white;
+    background-color: var(--primary);
+}
+
+.location-btn {
+    color: var(--primary);
+    background-color: var(--primary-soft);
+    white-space: nowrap;
+}
+
+.search-box button:hover,
+.location-btn:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 8px 18px rgba(17, 35, 43, 0.14);
+}
+
+.search-box button:hover {
+    background-color: #1c4052;
+}
+
+.location-btn:hover {
+    background-color: #dbe9ed;
+}
+
+.info-bar {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 10px;
+    padding: 11px 14px;
+}
+
+.info-bar span {
+    min-width: 0;
+    padding: 9px 11px;
+    color: var(--muted);
+    background-color: var(--surface-soft);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    font-size: 0.92rem;
+    font-weight: 750;
+    overflow-wrap: anywhere;
+}
+
+.workspace {
+    display: grid;
+    grid-template-columns: minmax(0, 1.35fr) minmax(360px, 0.85fr);
+    gap: 14px;
+    align-items: start;
+}
+
+.map-panel,
+.parking-list {
+    overflow: hidden;
+}
+
+.panel-heading {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 14px 16px;
+    border-bottom: 1px solid var(--line);
+}
+
+.panel-heading h2 {
+    font-size: 1rem;
+    font-weight: 850;
+    letter-spacing: 0;
+}
+
+.panel-heading span {
+    color: var(--muted);
+    font-size: 0.82rem;
+    font-weight: 650;
+    text-align: right;
+}
+
+#map {
+    width: 100%;
+    height: min(68vh, 640px);
+    min-height: 440px;
+    z-index: 1;
+}
+
+/* Keep Leaflet tiles and overlays aligned and prevent split tile rendering. */
+.leaflet-container,
+.leaflet-pane,
+.leaflet-tile,
+.leaflet-marker-icon,
+.leaflet-marker-shadow {
+    max-width: none;
+    max-height: none;
+}
+
+.leaflet-container {
+    font-family: inherit;
+}
+
+.leaflet-popup-content-wrapper,
+.leaflet-popup-tip {
+    border-radius: 8px;
+    box-shadow: 0 10px 30px rgba(17, 35, 43, 0.2);
+}
+
+.parking-list {
+    height: min(68vh, 640px);
+    min-height: 440px;
+    display: flex;
+    flex-direction: column;
+}
+
+.list-container {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 10px;
+    padding: 12px;
+    overflow-y: auto;
+}
+
+.parking-item {
+    padding: 14px;
+    background-color: var(--surface);
+    border: 1px solid var(--line);
+    border-left: 4px solid var(--accent);
+    border-radius: 8px;
+    cursor: pointer;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+}
+
+.parking-item:hover {
+    border-color: rgba(46, 196, 182, 0.8);
+    box-shadow: 0 10px 24px rgba(17, 35, 43, 0.1);
+    transform: translateY(-1px);
+}
+
+.parking-item h3 {
+    margin-bottom: 9px;
+    color: var(--ink);
+    font-size: 1rem;
+    line-height: 1.25;
+    font-weight: 850;
+}
+
+.parking-item p {
+    margin: 6px 0;
+    color: var(--muted);
+    font-size: 0.88rem;
+    line-height: 1.35;
+}
+
+.parking-item strong {
+    color: var(--ink);
+}
+
+.parking-item .distance {
+    margin-top: 10px;
+    color: var(--accent-deep);
+    font-weight: 850;
+}
+
+.availability {
+    margin-top: 12px;
+    padding: 10px 12px;
+    border-radius: 8px;
+    font-size: 0.9rem;
+    font-weight: 850;
+}
+
+.availability.live {
+    color: var(--success-text);
+    background-color: var(--success-bg);
+    border: 1px solid #bde6ca;
+}
+
+.availability.unavailable {
+    color: var(--warn-text);
+    background-color: var(--warn-bg);
+    border: 1px solid #dfe5e9;
+}
+
+.parking-item .type {
+    display: inline-flex;
+    align-items: center;
+    min-height: 24px;
+    padding: 3px 9px;
+    color: #0e3d39;
+    background-color: #dff8f4;
+    border: 1px solid #b8ebe4;
+    border-radius: 999px;
+    font-size: 0.78rem;
+    font-weight: 850;
+}
+
+.placeholder,
+.loading {
+    grid-column: 1 / -1;
+    padding: 28px 18px;
+    color: var(--muted);
+    background-color: var(--surface-soft);
+    border: 1px dashed #cbd8dd;
+    border-radius: 8px;
+    text-align: center;
+    line-height: 1.5;
+}
+
+.loading {
+    color: var(--accent-deep);
+    font-weight: 850;
+}
+
+@media (max-width: 980px) {
+    .workspace {
+        grid-template-columns: 1fr;
+    }
+
+    .parking-list {
+        height: auto;
+        min-height: 0;
+    }
+
+    .list-container {
+        grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+        max-height: 620px;
+    }
+}
+
+@media (max-width: 720px) {
+    .app-shell {
+        padding: 12px;
+    }
+
+    .app-header {
+        align-items: flex-start;
+        flex-direction: column;
+        padding: 18px;
+    }
+
+    .header-badge {
+        align-self: flex-start;
+    }
+
+    .search-controls,
+    .search-box {
+        flex-direction: column;
+    }
+
+    .search-box button,
+    .location-btn {
+        width: 100%;
+    }
+
+    .info-bar {
+        grid-template-columns: 1fr;
+    }
+
+    .panel-heading {
+        align-items: flex-start;
+        flex-direction: column;
+        gap: 4px;
+    }
+
+    .panel-heading span {
+        text-align: left;
+    }
+
+    #map {
+        height: 390px;
+        min-height: 390px;
+    }
+
+    .list-container {
+        grid-template-columns: 1fr;
+    }
+}

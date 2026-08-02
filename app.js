@@ -23,6 +23,8 @@ let savedAreas = [];
 let cctvParkingAreas = [];
 let userMarkers;
 let adminMarkers;
+let userMarkerByAreaId = new Map();
+let adminMarkerByAreaId = new Map();
 
 const pinIcon = L.divIcon({
     className: '',
@@ -57,6 +59,10 @@ function normalizeName(name) {
 
 function metersToMiles(meters) {
     return meters / 1609.344;
+}
+
+function coordinateKey(value) {
+    return Number(value).toFixed(6);
 }
 
 function distanceMeters(origin, lat, lng) {
@@ -106,6 +112,7 @@ function renderParkingPopup(area, liveStatus = null) {
         : Number(area.availableSlots ?? Math.max(0, totalSlots - occupiedSlots));
     const capacity = liveStatus && !liveStatus.error ? Number(liveStatus.capacity) : totalSlots;
     const occupied = liveStatus && !liveStatus.error ? Number(liveStatus.occupied) : occupiedSlots;
+    const detectedAt = liveStatus?.lastUpdated || area.lastDetectedAt;
 
     return `
         <div class="parking-popup">
@@ -115,11 +122,57 @@ function renderParkingPopup(area, liveStatus = null) {
                 <span>available of ${capacity} slots</span>
             </div>
             <p><b>Occupied:</b> ${occupied}</p>
+            <p><b>Latitude:</b> ${Number(area.lat).toFixed(6)}</p>
+            <p><b>Longitude:</b> ${Number(area.lng ?? area.lon).toFixed(6)}</p>
             ${liveStatus?.error ? `<p class="popup-error"><b>CCTV status:</b> ${escapeHtml(liveStatus.error)}</p>` : ''}
             ${liveStatus && !liveStatus.error ? '<p class="popup-live">Live CCTV count active</p>' : ''}
+            ${detectedAt ? `<p class="popup-muted">Updated: ${escapeHtml(new Date(detectedAt).toLocaleTimeString())}</p>` : ''}
             ${renderCctvPreview(area.cameraUrl || '')}
         </div>
     `;
+}
+
+function getAreaKey(area) {
+    return String(area.id || `${normalizeName(getName(area))}-${coordinateKey(area.lat)}-${coordinateKey(area.lng ?? area.lon)}`);
+}
+
+function getAvailabilityText(area) {
+    const liveStatus = area.cctvStatus;
+    if (liveStatus && !liveStatus.error) {
+        return `${liveStatus.available} free / ${liveStatus.capacity} live units`;
+    }
+
+    return `${area.availableSlots} free / ${area.totalSlots} slots`;
+}
+
+function updateAreaDom(area, scope) {
+    const key = getAreaKey(area);
+    const item = [...document.querySelectorAll(`[data-${scope}-area-id]`)]
+        .find(element => element.dataset[`${scope}AreaId`] === key);
+    if (!item) return;
+
+    const availability = item.querySelector('[data-availability]');
+    const sync = item.querySelector('[data-sync-status]');
+    const detected = item.querySelector('[data-detected-at]');
+
+    if (availability) {
+        availability.textContent = `${scope === 'user' ? 'Admin-added - ' : ''}${getAvailabilityText(area)}`;
+    }
+
+    if (sync) {
+        sync.textContent = area.cctvStatus && !area.cctvStatus.error ? 'Live backend sync' : '';
+    }
+
+    if (detected) {
+        detected.textContent = area.lastDetectedAt ? `Detector updated ${new Date(area.lastDetectedAt).toLocaleTimeString()}` : '';
+    }
+}
+
+function updateMarkerPopup(markerMap, area) {
+    const marker = markerMap.get(getAreaKey(area));
+    if (marker) {
+        marker.setPopupContent(renderParkingPopup(area, area.cctvStatus));
+    }
 }
 
 function initUserMap() {
@@ -159,14 +212,12 @@ function findMatchingCctvArea(place) {
     const placeName = normalizeName(getName(place));
 
     return cctvParkingAreas.find(area => {
-        const radiusMiles = metersToMiles(area.matchRadiusMeters || 200);
-        const placeLat = Number(place.lat);
-        const placeLng = Number(place.lng ?? place.lon);
-        const distanceMiles = metersToMiles(L.latLng(placeLat, placeLng).distanceTo([area.lat, area.lng]));
         const areaName = normalizeName(area.name);
-        const coordinateMatch = distanceMiles <= radiusMiles;
-        const nameMatch = placeName && areaName && (placeName.includes(areaName) || areaName.includes(placeName));
-        return coordinateMatch || nameMatch;
+        const nameMatch = placeName && areaName && placeName === areaName;
+        const latMatch = coordinateKey(place.lat) === coordinateKey(area.lat);
+        const lngMatch = coordinateKey(place.lng ?? place.lon) === coordinateKey(area.lng);
+
+        return nameMatch && latMatch && lngMatch;
     });
 }
 
@@ -214,6 +265,7 @@ function renderParking(locations) {
     const list = document.querySelector('#parking-list');
     document.querySelector('#result-count').textContent = `${locations.length} spot${locations.length === 1 ? '' : 's'}`;
     userMarkers.clearLayers();
+    userMarkerByAreaId = new Map();
 
     if (!locations.length) {
         list.innerHTML = '<p class="empty-state">No admin-added parking areas were found around this location.</p>';
@@ -233,20 +285,23 @@ function renderParking(locations) {
         const liveAvailability = liveStatus && !liveStatus.error ? `${liveStatus.available} free / ${liveStatus.capacity} live units` : null;
         const availability = liveAvailability || adminAvailability || 'Admin-added parking area';
         const markerIcon = liveStatus || spot.adminAdded ? livePinIcon : pinIcon;
+        const areaKey = getAreaKey(spot);
         const marker = L.marker([lat, lng], { icon: markerIcon })
             .bindPopup(renderParkingPopup(spot, liveStatus), { maxWidth: 330 })
             .addTo(userMarkers);
+        userMarkerByAreaId.set(areaKey, marker);
 
         bounds.push([lat, lng]);
 
         const item = document.createElement('button');
         item.className = 'parking-item';
         item.type = 'button';
+        item.dataset.userAreaId = areaKey;
         item.innerHTML = `
             <span class="parking-icon">P</span>
             <span>
                 <span class="parking-name">${escapeHtml(name)}</span>
-                <span class="parking-meta">${spot.adminAdded ? 'Admin-added - ' : ''}${escapeHtml(availability)}</span>
+                <span class="parking-meta" data-availability>${spot.adminAdded ? 'Admin-added - ' : ''}${escapeHtml(availability)}</span>
                 ${liveStatus?.error ? `<span class="parking-meta error-text">CCTV unavailable: ${escapeHtml(liveStatus.error)}</span>` : ''}
             </span>
             <span class="parking-distance">${label}</span>
@@ -274,7 +329,10 @@ async function refreshUserAvailability() {
             if (!spot.adminAdded || !byId.has(spot.id)) return spot;
             return { ...byId.get(spot.id), lng: byId.get(spot.id).lng ?? byId.get(spot.id).lon, adminAdded: true, source: 'admin' };
         })).map(area => ({ ...area, meters: distanceMeters(currentOrigin, area.lat, area.lng ?? area.lon) }));
-        renderParking(currentLocations);
+        currentLocations.forEach(area => {
+            updateAreaDom(area, 'user');
+            updateMarkerPopup(userMarkerByAreaId, area);
+        });
     } catch {
         // Keep the last rendered data if the local API is briefly unavailable.
     }
@@ -314,6 +372,7 @@ function renderSavedAreas(areas) {
     const saved = document.querySelector('#saved-areas');
     document.querySelector('#saved-count').textContent = `${areas.length} area${areas.length === 1 ? '' : 's'}`;
     adminMarkers.clearLayers();
+    adminMarkerByAreaId = new Map();
 
     if (!areas.length) {
         saved.innerHTML = '<p class="empty-state">No areas saved yet.</p>';
@@ -324,18 +383,26 @@ function renderSavedAreas(areas) {
     areas.forEach(area => {
         const lat = Number(area.lat);
         const lng = Number(area.lng ?? area.lon);
+        const liveStatus = area.cctvStatus;
+        const liveAvailability = liveStatus && !liveStatus.error ? `${liveStatus.available} free / ${liveStatus.capacity} live units` : null;
+        const adminAvailability = `${area.availableSlots} free / ${area.totalSlots} slots`;
+        const areaKey = getAreaKey(area);
         const marker = L.marker([lat, lng], { icon: livePinIcon })
-            .bindPopup(renderParkingPopup(area), { maxWidth: 330 })
+            .bindPopup(renderParkingPopup(area, liveStatus), { maxWidth: 330 })
             .addTo(adminMarkers);
+        adminMarkerByAreaId.set(areaKey, marker);
 
         const item = document.createElement('button');
         item.className = 'parking-item';
         item.type = 'button';
+        item.dataset.adminAreaId = areaKey;
         item.innerHTML = `
             <span class="parking-icon">P</span>
             <span>
                 <span class="parking-name">${escapeHtml(area.name)}</span>
-                <span class="parking-meta">${area.availableSlots} free / ${area.totalSlots} slots</span>
+                <span class="parking-meta" data-availability>${escapeHtml(liveAvailability || adminAvailability)}</span>
+                <span class="parking-meta" data-sync-status>${liveStatus && !liveStatus.error ? 'Live backend sync' : ''}</span>
+                <span class="parking-meta" data-detected-at>${area.lastDetectedAt ? `Detector updated ${escapeHtml(new Date(area.lastDetectedAt).toLocaleTimeString())}` : ''}</span>
             </span>
         `;
         item.addEventListener('click', () => {
@@ -349,10 +416,26 @@ function renderSavedAreas(areas) {
 async function loadAdminAreas() {
     initAdminMap();
     try {
-        savedAreas = await fetchSavedAreas();
+        await fetchCctvParkingAreas();
+        savedAreas = attachCctvAvailability(await fetchSavedAreas());
         renderSavedAreas(savedAreas);
     } catch {
         document.querySelector('#saved-areas').innerHTML = '<p class="empty-state">Parking-area API unavailable. Start the Python backend.</p>';
+    }
+}
+
+async function refreshAdminAvailability() {
+    if (document.querySelector('#admin-portal').classList.contains('hidden')) return;
+
+    try {
+        await fetchCctvParkingAreas();
+        savedAreas = attachCctvAvailability(await fetchSavedAreas());
+        savedAreas.forEach(area => {
+            updateAreaDom(area, 'admin');
+            updateMarkerPopup(adminMarkerByAreaId, area);
+        });
+    } catch {
+        // Keep the last rendered admin data if the local API is briefly unavailable.
     }
 }
 
@@ -534,4 +617,7 @@ document.querySelector('#save-area').addEventListener('click', async () => {
 document.querySelector('#total-slots').addEventListener('input', updateAvailableSlots);
 document.querySelector('#occupied-slots').addEventListener('input', updateAvailableSlots);
 
-window.setInterval(refreshUserAvailability, 10000);
+window.setInterval(() => {
+    refreshUserAvailability();
+    refreshAdminAvailability();
+}, 3000);

@@ -6,8 +6,9 @@
     "lng": 85.32870365331534,
     "cameraUrl": "http://192.168.242.84:8080/video",
     "totalSlots": 30,
-    "occupiedSlots": 2,
-    "createdAt": "2026-08-02T05:32:25.896642+00:00"
+    "occupiedSlots": 14,
+    "createdAt": "2026-08-02T05:32:25.896642+00:00",
+    "lastDetectedAt": "2026-08-02T06:13:03.306752+00:00"
   },
   {
     "id": "091c9c385eb746f181f5de873e33f16f",

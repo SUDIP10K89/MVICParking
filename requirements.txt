@@ -22,6 +22,7 @@ polars==1.41.1
 polars-runtime-32==1.41.1
 psutil==7.2.2
 pyparsing==3.3.2
+pymongo==4.15.4
 python-dateutil==2.9.0.post0
 PyYAML==6.0.3
 requests==2.34.2

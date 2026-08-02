@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import os
 import re
 import threading
 import time
@@ -38,8 +39,97 @@ PARKING_AREAS: dict[str, dict[str, Any]] = {
 }
 
 DATA_FILE = Path(__file__).with_name("parking_areas.json")
+ENV_FILE = Path(__file__).with_name(".env")
 parking_area_lock = threading.Lock()
 URL_PATTERN = re.compile(r"^(https?://|rtsp://)", re.IGNORECASE)
+mongo_collection = None
+mongo_checked = False
+
+
+def load_env_file() -> dict[str, str]:
+    if not ENV_FILE.exists():
+        return {}
+
+    values = {}
+    for line in ENV_FILE.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+
+        key, value = stripped.split("=", 1)
+        values[key.strip()] = value.strip().strip('"').strip("'")
+
+    return values
+
+
+def get_config_value(key: str, default: str = "") -> str:
+    return os.environ.get(key) or load_env_file().get(key, default)
+
+
+def get_parking_area_collection():
+    global mongo_checked, mongo_collection
+
+    if mongo_checked:
+        return mongo_collection
+
+    mongo_checked = True
+    mongo_uri = get_config_value("MONGODB_URI")
+    if not mongo_uri:
+        return None
+
+    try:
+        from pymongo import MongoClient
+
+        client = MongoClient(mongo_uri, serverSelectionTimeoutMS=3000)
+        client.admin.command("ping")
+        db_name = get_config_value("MONGODB_DB", "parkwise")
+        mongo_collection = client[db_name]["parking_areas"]
+        mongo_collection.create_index([("location", "2dsphere")])
+        seed_mongo_from_json(mongo_collection)
+    except Exception as exc:
+        print(f"MongoDB unavailable, using local JSON storage: {exc}")
+        mongo_collection = None
+
+    return mongo_collection
+
+
+def mongo_document(area: dict[str, Any]) -> dict[str, Any]:
+    doc = dict(area)
+    lat = float(doc["lat"])
+    lng = float(doc.get("lng", doc.get("lon")))
+    doc["lat"] = lat
+    doc["lng"] = lng
+    doc["location"] = {"type": "Point", "coordinates": [lng, lat]}
+    return doc
+
+
+def app_area(area: dict[str, Any]) -> dict[str, Any]:
+    result = dict(area)
+    if "_id" in result and "id" not in result:
+        result["id"] = str(result["_id"])
+    result.pop("_id", None)
+
+    location = result.get("location")
+    if isinstance(location, dict):
+        coordinates = location.get("coordinates")
+        if isinstance(coordinates, list) and len(coordinates) == 2:
+            result.setdefault("lng", coordinates[0])
+            result.setdefault("lat", coordinates[1])
+
+    return result
+
+
+def load_json_parking_areas() -> list[dict[str, Any]]:
+    return load_json_parking_areas()
+
+
+def seed_mongo_from_json(collection) -> None:
+    if collection.estimated_document_count() > 0:
+        return
+
+    areas = load_json_parking_areas()
+    if areas:
+        collection.insert_many([mongo_document(area) for area in areas])
 
 
 # COCO class ids used by YOLOv8: person, car, motorcycle, bus, truck.
@@ -123,6 +213,10 @@ def build_statuses() -> dict[str, ParkingStatus]:
 
 
 def load_saved_parking_areas() -> list[dict[str, Any]]:
+    collection = get_parking_area_collection()
+    if collection is not None:
+        return [app_area(area) for area in collection.find({}).sort("createdAt", -1)]
+
     with parking_area_lock:
         if not DATA_FILE.exists():
             return []
@@ -136,6 +230,13 @@ def load_saved_parking_areas() -> list[dict[str, Any]]:
 
 
 def save_parking_areas(areas: list[dict[str, Any]]) -> None:
+    collection = get_parking_area_collection()
+    if collection is not None:
+        collection.delete_many({})
+        if areas:
+            collection.insert_many([mongo_document(area) for area in areas])
+        return
+
     with parking_area_lock:
         DATA_FILE.write_text(json.dumps(areas, indent=2), encoding="utf-8")
 

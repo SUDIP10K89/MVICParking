@@ -1,43 +1,12 @@
 [
   {
-    "id": "9811feddd6c34c049054d3ee37cbb11d",
-    "name": "Sama",
-    "lat": 27.714491147604736,
-    "lng": 85.32870365331534,
-    "cameraUrl": "http://192.168.242.84:8080/video",
-    "totalSlots": 30,
-    "occupiedSlots": 14,
-    "createdAt": "2026-08-02T05:32:25.896642+00:00",
-    "lastDetectedAt": "2026-08-02T06:13:03.306752+00:00"
-  },
-  {
-    "id": "091c9c385eb746f181f5de873e33f16f",
-    "name": "Dangal",
-    "lat": 27.712725710393546,
-    "lng": 85.33160066522136,
-    "cameraUrl": "http://172.18.0.82:8080/video",
-    "totalSlots": 20,
-    "occupiedSlots": 5,
-    "createdAt": "2026-08-02T05:23:53.334501+00:00"
-  },
-  {
-    "id": "9de8dd85839947948df6b48ca670a281",
-    "name": "Pokhari",
-    "lat": 27.71101583885476,
-    "lng": 85.32529212375394,
-    "cameraUrl": "rtsp://172.18.0.82:8080/h264.sdp",
-    "totalSlots": 20,
-    "occupiedSlots": 2,
-    "createdAt": "2026-08-02T05:16:16.637080+00:00"
-  },
-  {
-    "id": "28ff2a7e3d0e40168f185f05242cb1a6",
+    "id": "c0462e1f7523486799e2c092bb60ed9c",
     "name": "MVIC College",
-    "lat": 27.706772602012183,
-    "lng": 85.33058300593613,
-    "cameraUrl": "",
+    "lat": 27.706772616798578,
+    "lng": 85.33056898890104,
+    "cameraUrl": "http://192.168.242.84:8080/video",
     "totalSlots": 20,
-    "occupiedSlots": 15,
-    "createdAt": "2026-08-02T04:37:18.092263+00:00"
+    "occupiedSlots": 3,
+    "createdAt": "2026-08-02T06:28:23.806256+00:00"
   }
 ]

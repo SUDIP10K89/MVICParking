@@ -1,70 +1,154 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>PARK WITH PYRS - Live Parking Finder</title>
-    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 200 200'><rect width='200' height='200' fill='%23122c3a' rx='40'/><path d='M58 150V46h48c24 0 40 15 40 37s-16 38-40 38H86v29H58zm28-55h17c10 0 16-5 16-13s-6-13-16-13H86v26z' fill='%23ffffff'/><circle cx='150' cy='150' r='16' fill='%232ec4b6'/></svg>">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
+    <title>PARK WITH PYRS - Smart Parking</title>
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 200 200'><rect width='200' height='200' fill='%2310241c' rx='38'/><path d='M58 150V46h48c24 0 40 15 40 37s-16 38-40 38H86v29H58zm28-55h17c10 0 16-5 16-13s-6-13-16-13H86v26z' fill='%23d5ff49'/></svg>">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-    <div class="app-shell">
-        <header class="app-header">
+    <main id="auth-screen" class="auth-screen">
+        <section class="auth-intro">
+            <a class="brand" href="#" aria-label="PARK WITH PYRS home"><span class="brand-mark">P</span>PARK WITH PYRS</a>
             <div>
-                <p class="eyebrow">Live CCTV parking intelligence</p>
-                <h1>PARK WITH PYRS</h1>
+                <p class="eyebrow">SMART PARKING</p>
+                <h1>Parking, made simpler.</h1>
+                <p class="subtitle">Find available parking near your destination, or manage CCTV-ready areas for your community.</p>
             </div>
-            <div class="header-badge">
-                <span class="status-dot"></span>
-                CCTV-ready
-            </div>
-        </header>
+            <p class="auth-caption">OpenStreetMap search plus live parking intelligence.</p>
+        </section>
 
-        <main class="app-main">
-            <section class="controls-panel" aria-label="Search and location controls">
-                <div class="search-controls">
-                    <div class="search-box">
-                        <input
-                            type="text"
-                            id="searchInput"
-                            placeholder="Search a place, mall, hospital, restaurant..."
-                            autocomplete="off"
-                        >
-                        <button id="searchBtn" type="button">Search</button>
-                    </div>
-                    <button id="locationBtn" class="location-btn" type="button">Use My Location</button>
+        <section class="auth-panel" aria-label="Sign in">
+            <div class="auth-card">
+                <p class="eyebrow">WELCOME BACK</p>
+                <h2 id="auth-title">Sign in to find parking</h2>
+                <div class="role-switch" role="tablist" aria-label="Choose portal">
+                    <button class="role-tab active" type="button" data-role="user" role="tab" aria-selected="true">User portal</button>
+                    <button class="role-tab" type="button" data-role="admin" role="tab" aria-selected="false">Admin portal</button>
+                </div>
+                <form id="sign-in-form">
+                    <label for="email">Email address</label>
+                    <input id="email" type="email" placeholder="you@example.com" required>
+                    <label for="password">Password</label>
+                    <input id="password" type="password" placeholder="Enter your password" required>
+                    <button id="sign-in-button" class="primary-button" type="submit">Sign in as user <span>+</span></button>
+                </form>
+                <p class="auth-help">Demo mode accepts any email and password.</p>
+            </div>
+        </section>
+    </main>
+
+    <main id="user-portal" class="app-shell portal hidden">
+        <aside class="sidebar" aria-label="Parking search">
+            <header class="brand-row">
+                <a class="brand" href="#" aria-label="PARK WITH PYRS home"><span class="brand-mark">P</span>PARK WITH PYRS</a>
+                <button class="portal-exit" type="button" data-sign-out>Sign out</button>
+            </header>
+
+            <div class="intro">
+                <p class="eyebrow">USER PORTAL</p>
+                <h1>Find your next parking spot.</h1>
+                <p class="subtitle">Search a place, mall, hospital, restaurant, or use your current location.</p>
+            </div>
+
+            <form id="search-form" class="search-card">
+                <label for="address">Where are you going?</label>
+                <div class="input-wrap">
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                        <path d="M12 21s7-5.2 7-12a7 7 0 1 0-14 0c0 6.8 7 12 7 12Z"></path>
+                        <circle cx="12" cy="9" r="2.3"></circle>
+                    </svg>
+                    <input id="address" type="search" placeholder="Enter an address or place" autocomplete="off">
+                </div>
+                <button class="primary-button" type="submit">Search parking <span>+</span></button>
+                <button id="location-button" class="text-button" type="button">Use my current location</button>
+            </form>
+
+            <section class="results" aria-live="polite">
+                <div class="results-heading">
+                    <h2>Nearby parking</h2>
+                    <span id="result-count">0 spots</span>
+                </div>
+                <div id="parking-list" class="parking-list">
+                    <p class="empty-state">Search an address or use your location to see nearby parking.</p>
                 </div>
             </section>
 
-            <section class="status-panel" aria-live="polite">
-                <div class="info-bar">
-                    <span id="locationInfo">Loading map...</span>
-                    <span id="parkingCount">Parking areas: 0</span>
+            <p id="status" class="status" role="status">Ready.</p>
+            <footer>Map data <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OpenStreetMap</a> contributors</footer>
+        </aside>
+
+        <section class="map-panel" aria-label="Parking map">
+            <div id="user-map"></div>
+            <div class="map-controls">
+                <button id="zoom-in" type="button" aria-label="Zoom in">+</button>
+                <button id="zoom-out" type="button" aria-label="Zoom out">-</button>
+            </div>
+            <div class="map-note"><span class="pulse"></span> Live parking search</div>
+        </section>
+    </main>
+
+    <main id="admin-portal" class="admin-shell portal hidden">
+        <aside class="admin-sidebar">
+            <header class="brand-row">
+                <a class="brand" href="#" aria-label="PARK WITH PYRS home"><span class="brand-mark">P</span>PARK WITH PYRS</a>
+                <button class="portal-exit" type="button" data-sign-out>Sign out</button>
+            </header>
+
+            <div class="intro">
+                <p class="eyebrow">ADMIN PORTAL</p>
+                <h1>Manage parking areas.</h1>
+                <p class="subtitle">Click the map or locate an address, then save the area and its slot count.</p>
+            </div>
+
+            <section class="location-card">
+                <p class="card-label">NEW PARKING AREA</p>
+                <label for="area-name">Area name</label>
+                <input id="area-name" type="text" placeholder="e.g. City Centre Garage">
+                <label for="admin-address">Parking location</label>
+                <div class="admin-location-row">
+                    <input id="admin-address" type="search" placeholder="Enter an address or place">
+                    <button id="locate-area" type="button">Locate</button>
                 </div>
+                <button id="admin-current-location" class="text-button" type="button">Use my current location</button>
+                <label for="camera-url">IP webcam or RTSP URL</label>
+                <input id="camera-url" type="url" placeholder="http://192.168.1.20:8080/video">
+                <div class="slot-fields">
+                    <div>
+                        <label for="total-slots">Total slots</label>
+                        <input id="total-slots" type="number" min="1" placeholder="50">
+                    </div>
+                    <div>
+                        <label for="occupied-slots">Occupied</label>
+                        <input id="occupied-slots" type="number" min="0" placeholder="18">
+                    </div>
+                </div>
+                <p id="available-slots" class="coordinate">Available slots: -</p>
+                <p id="selected-location" class="coordinate">Enter a location or select a point on the map</p>
+                <button id="save-area" class="primary-button" type="button" disabled>Save parking area <span>+</span></button>
             </section>
 
-            <div class="workspace">
-                <section class="map-panel" aria-label="Map">
-                    <div class="panel-heading">
-                        <h2>Map View</h2>
-                        <span>OpenStreetMap + live CCTV matches</span>
-                    </div>
-                    <div id="map"></div>
-                </section>
+            <section class="results">
+                <div class="results-heading">
+                    <h2>Saved areas</h2>
+                    <span id="saved-count">0 areas</span>
+                </div>
+                <div id="saved-areas" class="parking-list">
+                    <p class="empty-state">No areas saved yet.</p>
+                </div>
+            </section>
+        </aside>
 
-                <section class="parking-list" aria-label="Nearby places list">
-                    <div class="panel-heading">
-                        <h2>Nearby Places</h2>
-                        <span>Availability appears only for configured CCTV areas</span>
-                    </div>
-                    <div id="parkingList" class="list-container">
-                        <p class="placeholder">Search or use your location to find nearby places and CCTV-backed parking availability.</p>
-                    </div>
-                </section>
-            </div>
-        </main>
-    </div>
+        <section class="map-panel admin-map-panel" aria-label="Parking area locator">
+            <div id="admin-map"></div>
+            <div class="admin-map-tip">Click anywhere on the map to place a parking area</div>
+        </section>
+    </main>
 
     <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
     <script src="app.js"></script>

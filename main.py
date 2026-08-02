@@ -3,12 +3,15 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import re
 import threading
 import time
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
+from uuid import uuid4
 
 
 def parse_source(source: str) -> int | str:
@@ -33,6 +36,10 @@ PARKING_AREAS: dict[str, dict[str, Any]] = {
         "resize_width": 640,
     }
 }
+
+DATA_FILE = Path(__file__).with_name("parking_areas.json")
+parking_area_lock = threading.Lock()
+URL_PATTERN = re.compile(r"^(https?://|rtsp://)", re.IGNORECASE)
 
 
 # COCO class ids used by YOLOv8: person, car, motorcycle, bus, truck.
@@ -113,6 +120,76 @@ def build_statuses() -> dict[str, ParkingStatus]:
         )
 
     return statuses
+
+
+def load_saved_parking_areas() -> list[dict[str, Any]]:
+    with parking_area_lock:
+        if not DATA_FILE.exists():
+            return []
+
+        try:
+            data = json.loads(DATA_FILE.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return []
+
+        return data if isinstance(data, list) else []
+
+
+def save_parking_areas(areas: list[dict[str, Any]]) -> None:
+    with parking_area_lock:
+        DATA_FILE.write_text(json.dumps(areas, indent=2), encoding="utf-8")
+
+
+def public_area(area: dict[str, Any]) -> dict[str, Any]:
+    total_slots = int(area.get("totalSlots", area.get("capacity", 0)))
+    occupied_slots = int(area.get("occupiedSlots", area.get("occupied", 0)))
+    available_slots = max(0, total_slots - occupied_slots)
+
+    return {
+        "id": str(area["id"]),
+        "name": str(area["name"]),
+        "lat": float(area["lat"]),
+        "lng": float(area["lng"]),
+        "lon": float(area["lng"]),
+        "cameraUrl": str(area.get("cameraUrl", "")),
+        "totalSlots": total_slots,
+        "occupiedSlots": occupied_slots,
+        "availableSlots": available_slots,
+        "createdAt": area.get("createdAt"),
+    }
+
+
+def validate_area_payload(payload: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
+    name = str(payload.get("name", "")).strip()
+    camera_url = str(payload.get("cameraUrl", "")).strip()
+
+    try:
+        lat = float(payload.get("lat"))
+        lng = float(payload.get("lng", payload.get("lon")))
+        total_slots = int(payload.get("totalSlots"))
+        occupied_slots = int(payload.get("occupiedSlots"))
+    except (TypeError, ValueError):
+        return None, "Enter a name, valid coordinates, and valid slot counts."
+
+    if not name:
+        return None, "Parking area name is required."
+    if not (-90 <= lat <= 90) or not (-180 <= lng <= 180):
+        return None, "Coordinates are outside the valid latitude/longitude range."
+    if total_slots < 1 or occupied_slots < 0 or occupied_slots > total_slots:
+        return None, "Occupied slots must be between 0 and the total slot count."
+    if camera_url and not URL_PATTERN.match(camera_url):
+        return None, "Camera URL must start with http://, https://, or rtsp://."
+
+    return {
+        "id": uuid4().hex,
+        "name": name[:120],
+        "lat": lat,
+        "lng": lng,
+        "cameraUrl": camera_url,
+        "totalSlots": total_slots,
+        "occupiedSlots": occupied_slots,
+        "createdAt": dt.datetime.now(dt.UTC).isoformat(),
+    }, None
 
 
 def run_detector(area_id: str, config: dict[str, Any], status: ParkingStatus, display: bool) -> None:
@@ -247,10 +324,24 @@ def write_json(handler: BaseHTTPRequestHandler, payload: dict[str, Any], status_
     handler.send_header("Content-Type", "application/json")
     handler.send_header("Content-Length", str(len(body)))
     handler.send_header("Access-Control-Allow-Origin", "*")
-    handler.send_header("Access-Control-Allow-Methods", "GET, OPTIONS")
+    handler.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
     handler.send_header("Access-Control-Allow-Headers", "Content-Type")
     handler.end_headers()
     handler.wfile.write(body)
+
+
+def read_json_body(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
+    length = int(handler.headers.get("Content-Length", "0"))
+    if length > 100_000:
+        raise ValueError("Request body too large")
+
+    raw_body = handler.rfile.read(length).decode("utf-8") if length else "{}"
+    payload = json.loads(raw_body or "{}")
+
+    if not isinstance(payload, dict):
+        raise ValueError("JSON body must be an object")
+
+    return payload
 
 
 def create_handler(statuses: dict[str, ParkingStatus]):
@@ -269,6 +360,12 @@ def create_handler(statuses: dict[str, ParkingStatus]):
                 write_json(self, {"areas": [status.snapshot() for status in statuses.values()]})
                 return
 
+            if path == "/api/parking-areas":
+                areas = [public_area(area) for area in load_saved_parking_areas()]
+                areas.sort(key=lambda area: str(area.get("createdAt") or ""), reverse=True)
+                write_json(self, {"areas": areas})
+                return
+
             prefix = "/api/parking-status/"
             if path.startswith(prefix):
                 area_id = path[len(prefix):]
@@ -282,6 +379,29 @@ def create_handler(statuses: dict[str, ParkingStatus]):
                 return
 
             write_json(self, {"error": "Not found"}, 404)
+
+        def do_POST(self) -> None:
+            path = urlparse(self.path).path.rstrip("/")
+
+            if path != "/api/parking-areas":
+                write_json(self, {"error": "Not found"}, 404)
+                return
+
+            try:
+                payload = read_json_body(self)
+            except (json.JSONDecodeError, ValueError) as exc:
+                write_json(self, {"error": str(exc)}, 400)
+                return
+
+            area, error = validate_area_payload(payload)
+            if error or area is None:
+                write_json(self, {"error": error or "Invalid parking area"}, 400)
+                return
+
+            areas = load_saved_parking_areas()
+            areas.insert(0, area)
+            save_parking_areas(areas)
+            write_json(self, public_area(area), 201)
 
         def log_message(self, format: str, *args: Any) -> None:
             return
